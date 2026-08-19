@@ -76,6 +76,31 @@ model is called. If a `transcript_analyst_stage` span is ever *missing* from a t
 transcript should exist, that's a real bug to chase (the lookback scan or exhibit-discovery logic
 failing silently) — but its absence on a ticker with no transcript is expected, not an error.
 
+## Phase 3: the Investigator's span
+
+`investigator_stage` (in `agents/investigator.py::run_investigator()`) carries `metric`/`severity` on
+open, and on close: `verdict`, `confidence`, `search_count`, `raw_result_domain_count` (every domain
+any raw `web_search` call returned, including irrelevant noise), `evidence_domain_count` (domains of
+the model's actually-*cited*, grounded evidence — the metric that drives the multi-angle enforcement;
+deliberately distinct from `raw_result_domain_count`, see `agents.md`), and
+`dropped_evidence_count`. Nests `investigator run` → `chat claude-opus-5`, same shape as the other
+four agents. On a budget overrun (`UsageLimitExceeded`), the span still closes cleanly with
+`verdict="unresolved"` and `budget_exceeded=True` — the degrade-gracefully path never lets the span
+(or the run) fail open.
+
+Native `web_search`/`web_fetch` calls do **not** appear as their own child spans (they're
+provider-executed, represented as message parts, not OTel spans — see `evals.md`'s Trajectory evals
+section) — don't go looking for a `web_search` tool-call span in the trace; it isn't there. The
+signal for "did it actually search broadly" lives on the `investigator_stage` span's own attributes
+above, derived from the typed `InvestigationTrajectory`/evidence, not from child spans.
+
+Live-verified (GOOGL, 2026-08-19): `investigator_stage` → `investigator run` → `chat claude-opus-5`,
+nested correctly alongside `financial_statements_analyst_stage`, `filings_analyst_stage`, and
+`flag_consolidator_stage` in one run (no `transcript_analyst_stage`, correctly — GOOGL has no
+transcript this run either). On the real consolidated capex flag: `search_count=6`,
+`dropped_evidence_count=0`, 11 grounded evidence items cited (vs. 35 raw noise domains returned by
+search) — exactly the gap `evidence_domain_count` exists to see past.
+
 ## Dashboards, annotation workflow
 
 Not yet built — `pipeline.py` (Phase 5) is what will generate enough real runs to make a dashboard

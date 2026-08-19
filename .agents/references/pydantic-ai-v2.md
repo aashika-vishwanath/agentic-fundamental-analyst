@@ -261,7 +261,9 @@ evaluators = [
 ]
 ```
 
-`HasMatchingSpan` is notable for this project: since Logfire captures a span per tool call / model request (Section 5), an evaluator can assert on agent *behavior* (e.g., "the investigator agent actually called WebSearch at least once") not just final output shape — useful for the investigator's agentic-loop testing where output alone doesn't prove it searched.
+`HasMatchingSpan` is notable for this project: since Logfire captures a span per tool call / model request (Section 5), an evaluator can assert on agent *behavior* (e.g., "the investigator agent actually called WebSearch at least once") not just final output shape.
+
+**Correction, Phase 3 (2026-08-19), confirmed against installed `pydantic-evals` 2.32.0 source — the claim above does NOT hold for native/provider-executed tools.** `HasMatchingSpan` and the dedicated agentic evaluators (`ToolCorrectness`, `MaxToolCalls`, `TrajectoryMatch`, `ArgumentCorrectness` — all new in this version, not covered when this doc was first written) all key off `_is_tool_call_span()`, which only recognizes **locally-executed** tool-call spans (`gen_ai.tool.name` on a span named `running tool`/`execute_tool …`). Anthropic's native `web_search`/`web_fetch` are provider-executed: pydantic-ai represents them as `NativeToolCallPart`/`NativeToolReturnPart` **message parts** (`part_kind='builtin-tool-call'`/`'builtin-tool-return'`), never as their own span. So none of the built-in trajectory evaluators can see a native tool call — asserting "did the investigator search" requires reading `result.all_messages()` directly and pulling out the `NativeToolCallPart`/`NativeToolReturnPart` entries, not a span query. `HasMatchingSpan` is still valid for what it *can* see (e.g., that the enclosing `investigator_stage`/`investigator run` spans exist), just not for native tool-call counting. See `src/agentic_fundamental_analyst/agents/provenance.py` and `.agents/references/evals.md`'s Trajectory evals section for the actual pattern used.
 
 ### Custom evaluators
 
@@ -452,7 +454,17 @@ Because instrumentation is OpenTelemetry-native, `logfire.configure(send_to_logf
 
 ## Open questions / gaps for follow-up
 
-1. **`SpendLimits` exact API** (harness package) — description-level only; no constructor signature or "what happens when the budget is hit" behavior confirmed from a primary doc page. If hard cost caps per pipeline run are required, either pull in `pydantic-ai-harness` and read source directly, or build budget enforcement manually on top of Logfire's `operation.cost` attribute at each stage boundary (fully achievable with core `pydantic-ai` + `logfire` alone, no harness dependency needed).
+1. ~~**`SpendLimits` exact API** (harness package)~~ — **RESOLVED, Phase 3 (2026-08-19).** No harness
+   dependency needed: **`pydantic_ai.usage.UsageLimits`, in core `pydantic-ai` (confirmed 2.32.0),
+   has a real `cost_limit: Decimal | None` field** alongside `request_limit`, `tool_calls_limit`,
+   `input_tokens_limit`, `output_tokens_limit`, `total_tokens_limit`. Pass it as
+   `agent.run(prompt, usage_limits=UsageLimits(cost_limit=Decimal("0.75")))`. When the cumulative
+   cost check trips (checked *between* requests, not mid-generation — a single large request can
+   still overshoot the nominal cap before the next request is refused; observed live at $1.14 actual
+   vs. a $0.75 cap), it raises `pydantic_ai.exceptions.UsageLimitExceeded` (`AgentRunError` subclass)
+   — catch it explicitly to degrade gracefully rather than let it propagate, especially inside
+   `asyncio.gather` where one flag's overrun would otherwise cancel every concurrently-running
+   investigation. Live usage: `src/agentic_fundamental_analyst/agents/investigator.py`.
 2. **Native WebSearch/WebFetch provider support matrix** — not enumerated; needs a direct check of `WebSearchTool`/`WebFetchTool` API reference pages against whatever model(s) this project targets, since "native vs. local fallback" behavior differs by provider and changes as providers add support.
 3. **`Instrumentation` capability vs. `logfire.instrument_pydantic_ai()` / `Agent.instrument_all()` precedence** — docs show all three paths exist; interaction/precedence when combined wasn't confirmed.
 4. **Dataset YAML save/load schema** (`pydantic_evals`) — referenced but not fetched; needed if datasets should be checked into the repo as data files rather than defined in Python.

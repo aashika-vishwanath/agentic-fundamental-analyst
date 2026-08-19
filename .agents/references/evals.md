@@ -74,12 +74,43 @@ Reran clean: 6/6 across all three evaluators. This mirrors Phase 1's own precede
 Beneish M-Score fixture until it crossed its intended threshold) — fixing what a fixture's content
 actually says, not loosening what the eval checks for.
 
+## `investigator` (Phase 3, real model + real web search, 2026-08-19)
+
+4 cases: both PRD §11 canonical capex cases (`capex_spike_ai_buildout_benign` = real GOOGL AI-buildout
+narrative, `capex_spike_declining_core_concerning` = real Intel foundry-buildout-vs-declining-core-CPU
+narrative — real, well-documented companies chosen deliberately so live web search has something real
+to find, unlike a fictional company), plus `obscure_microcap_thin_evidence_unresolved` (deliberately
+fictional company — the over-reach guard) and `routine_disclosure_benign` (Costco warehouse-capex
+story — the clean/negative guard). 6 evaluators: `EvidenceProvenanceEvaluator`,
+`MultiAngleInvestigation`, `ConfidenceCalibration` (all deterministic hard gates), `ExpectedVerdict`
+(recall), `LLMJudge` (reasoning-weighs-both-sides rubric), `HasMatchingSpan` (stage span exists).
+
+**Scores across live runs**: all 3 deterministic hard gates 100% on every case, every run. The two
+canonical PRD cases each independently resolved correctly (`benign`/`concerning`) at least once, with
+one run's `capex_spike_declining_core_concerning` hitting its `$0.75` cost cap on a genuinely complex
+multi-source investigation and correctly degrading to `unresolved` + `CoverageGap` rather than
+crashing — re-run in isolation, it resolved correctly (`concerning`, 0.62 confidence, $0.573).
+`LLMJudge` and `HasMatchingSpan` passed on every case that reached a resolved/thin-evidence verdict.
+Real cost: **$0.36-$1.14/case**. Full detail, including two real bugs caught only by running this
+live (not by any unit test written up front): `.agents/plans/phase-3-investigator.md` Execution
+Deviations.
+
 ## Trajectory evals
 
-Not applicable to any agent built so far — none has tools/capabilities (Financial Statements,
-Filings, Transcript Analysts, Flag Consolidator are all single-shot, no `WebSearch`/`WebFetch`).
-Trajectory evals (`HasMatchingSpan`, tool-call-count checks) are Investigator-only, per PRD §8 —
-land in Phase 3.
+**Investigator-only** (PRD §8), and the one place this codebase's evaluator strategy deviates from
+the PRD's literal spec. `pydantic-evals` 2.32.0 ships `ToolCorrectness`/`MaxToolCalls`/
+`TrajectoryMatch`/`HasMatchingSpan`-on-tool-name — but all of them match only **locally-executed**
+tool spans (`_is_tool_call_span` in `pydantic_evals/evaluators/agentic.py` requires a
+`gen_ai.tool.name`-bearing span named `running tool`/`execute_tool …`). Anthropic's native
+`web_search`/`web_fetch` are **provider-executed**: pydantic-ai represents them as
+`NativeToolCallPart`/`NativeToolReturnPart` **message parts**, not spans — confirmed against the
+installed source, not just docs. So PRD §8's literal "use `HasMatchingSpan` to assert it searched" is
+not implementable as written. `evals/investigator.py`'s `MultiAngleInvestigation` is the trajectory
+eval that actually matters here: it reads the typed `InvestigationVerdict.trajectory` field (built by
+`agents/provenance.py::extract_trajectory()` from the run's own message history) and asserts on
+search-query count and cited-evidence domain diversity directly, rather than on spans.
+`HasMatchingSpan` is still used, narrowed to what it *can* see: that the `investigator_stage` span
+exists.
 
 ## Annotation → eval flywheel
 

@@ -133,7 +133,67 @@ singleton group — a flag can never silently disappear during consolidation. Li
 grouped a real multi-year `capex_to_depreciation_ratio` flag sequence from GOOGL's real financials
 into one `ConsolidatedFlag` with a "sustained multi-year escalation" summary.
 
-## Not yet built (Phase 3+)
+## Investigator (Phase 3)
 
-Investigator, Sector Analyst, Macro Sensitivity Analyst, Valuation Interpreter, Synthesizer (draft +
-resolve), Red-Team — see PRD §4 roster and §12 phase plan.
+**Module**: `src/agentic_fundamental_analyst/agents/investigator.py`. **Model**:
+`anthropic:claude-opus-5` (PRD §4 roster tier) — the system's **one and only agentic loop** (CLAUDE.md
+hard constraint), and the only agent with `WebSearch`/`WebFetch` capabilities. Takes one
+`ConsolidatedFlag` plus lightweight `SiblingFlagSummary` context for every *other* flag raised this
+run (metric/period/description only — no extra tool calls, no sibling verdicts), and returns an
+`InvestigationVerdict`: benign/concerning/unresolved, a hypothesis, cited evidence, and a confidence
+score. `run_investigations(flags, max_investigations=5)` fans out `run_investigator` in parallel
+(`asyncio.gather`, PRD §4) across up to `max_investigations` flags selected by severity; every flag
+not selected surfaces as an explicit `CoverageGap` rather than being silently dropped.
+
+**Grounding — the third mechanism in this codebase**, after Phase 1's closed-ratio-table lookup and
+Phase 2's verbatim-quote check: **URL provenance**. Native `web_search`/`web_fetch` are
+provider-executed, so pydantic-ai represents them as `NativeToolCallPart`/`NativeToolReturnPart`
+message parts, not OTel tool-call spans (confirmed against installed `pydantic-evals` 2.32.0's
+`_is_tool_call_span`, which only recognizes locally-executed tools — a real gap from the PRD's literal
+"use `HasMatchingSpan` to assert it searched"). `agents/provenance.py::extract_trajectory()` walks the
+run's own message history to reconstruct the closed set — every URL the provider actually returned
+this run — and `ground_evidence()` drops any model-cited URL not in that set into `dropped_evidence`,
+same "drop, don't trust" idiom as `_resolve_groups`/`_ground_candidates`.
+
+**No one-to-one flag-to-source mapping (a hard design constraint, not a nice-to-have)**: the prompt
+instructs hypothesis-first, multi-angle search and explicitly forbids cherry-picking a source that
+confirms a pre-formed conclusion. This is enforced deterministically, not just by prompt: a resolved
+(benign/concerning) verdict is downgraded to `unresolved` in code
+(`_apply_multi_angle_rule`) unless the model's *cited, grounded* evidence spans ≥2 distinct
+registrable domains — **critically keyed on `{registrable_domain(e.url) for e in evidence}`, never on
+`trajectory.distinct_domains`** (every domain any raw search call *returned*, including irrelevant
+noise — a single search typically returns 5-10 different domains regardless of investigation quality).
+This exact bug was caught live during eval validation (a fictional-company case returned 32 raw noise
+domains while citing 0-2 real sources) — see `.agents/plans/phase-3-investigator.md` Execution
+Deviations. Confidence is calibrated the same way: <2 evidence domains caps it at 0.5, conflicting
+evidence stances cap it at 0.7.
+
+**Cost governance, three layers**: `WebSearch(max_uses=6)`/`WebFetch(max_uses=4)` (provider-enforced),
+`UsageLimits(request_limit=12, cost_limit=Decimal("0.75"))` (client-enforced — this closes
+`pydantic-ai-v2.md`'s former open question #1: a per-run USD cap needs no `pydantic-ai-harness`
+dependency, it's in core `pydantic-ai`), and `max_investigations=5` at the stage level. A budget
+overrun (`UsageLimitExceeded`) is caught and degrades to an `unresolved` verdict with a `CoverageGap`
+explaining why — never propagated, since one over-budget flag must not crash the other investigations
+running concurrently in the same `asyncio.gather`. Real observed cost: **$0.36–$1.14 per flag**
+(4 live runs), averaging ~$0.45-0.60 — above the plan's original $0.30-0.55 estimate on the high end
+for genuinely complex multi-source investigations. The `$0.75` cap is left as originally planned
+rather than raised — PRD §10/§12 already assign spend-limit tuning to Phase 6, and this real
+distribution is the input that phase should tune against.
+
+**Live-verified (GOOGL, 2026-08-19)**: resolved the same multi-year `capex_to_depreciation_ratio`
+escalation flag seen in Phase 2's live run (2.40x→4.33x, 2021-2025) as `benign`, confidence 0.70, 11
+grounded evidence items across 6 queries, 0 dropped. The hypothesis correctly separated two distinct
+causes rather than taking the ratio at face value: a disclosed AI/data-center capex program, and a
+January 2023 accounting-estimate change (extended server useful life) that mechanically suppresses
+the ratio's denominator independent of any change in real spending.
+
+**Correlated-flag signal, not resolution**: `correlated_sibling_indices` lets the Investigator note a
+suspected shared root cause with another flag from this run, by index only (never restating its
+content — the closed-set-by-index idiom, same as the Flag Consolidator). *Weighing* correlated flags
+as one story rather than stacking them as independent negatives is explicitly deferred to the Phase 5
+Synthesizer/Red-Team — see the plan's Notes → "Carried forward to Phase 5".
+
+## Not yet built (Phase 4+)
+
+Sector Analyst, Macro Sensitivity Analyst, Valuation Interpreter, Synthesizer (draft + resolve),
+Red-Team — see PRD §4 roster and §12 phase plan.
