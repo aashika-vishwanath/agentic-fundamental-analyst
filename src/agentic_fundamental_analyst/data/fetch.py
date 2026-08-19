@@ -9,6 +9,7 @@ from agentic_fundamental_analyst.contracts.financials import FinancialStatementB
 from agentic_fundamental_analyst.contracts.intake import TickerIntakeResult
 from agentic_fundamental_analyst.contracts.macro import MacroSeriesBundle
 from agentic_fundamental_analyst.contracts.prices import PriceHistory
+from agentic_fundamental_analyst.contracts.transcripts import TranscriptInput
 from agentic_fundamental_analyst.data.edgar import EdgarClient
 from agentic_fundamental_analyst.data.fred import FredClient
 from agentic_fundamental_analyst.data.tiingo import PriceClient
@@ -34,6 +35,7 @@ async def fetch_all(
     FilingSections,
     list[MacroSeriesBundle],
     PriceHistory,
+    TranscriptInput | None,
 ]:
     """Gated on TickerIntakeResult.in_scope — raises TickerOutOfScope before
     any other network call if the ticker is a bank/insurer/REIT (PRD §7).
@@ -45,6 +47,7 @@ async def fetch_all(
 
     financials = await edgar.get_financial_statement_bundle(ticker, intake.cik)
     filings = await edgar.get_filing_sections(intake.cik)
+    transcript = await edgar.get_transcript_input(intake.cik)
 
     fred = FredClient()
     macro_bundles = [
@@ -53,4 +56,4 @@ async def fetch_all(
 
     prices = await PriceClient().daily_prices(ticker, start=price_start)
 
-    return financials, filings, macro_bundles, prices
+    return financials, filings, macro_bundles, prices, transcript

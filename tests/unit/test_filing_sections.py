@@ -3,6 +3,8 @@ from pathlib import Path
 from agentic_fundamental_analyst.data.filing_sections import (
     extract_8k_item_bodies,
     extract_10k_sections,
+    extract_plain_text,
+    looks_like_transcript_body,
 )
 
 GOLDEN = Path(__file__).parent.parent / "golden"
@@ -50,6 +52,7 @@ def test_10k_missing_headers_yields_none_not_empty_string():
         "item_1_business": None,
         "item_1a_risk_factors": None,
         "item_7_mdna": None,
+        "item_9a_controls": None,
     }
 
 
@@ -70,3 +73,45 @@ def test_aapl_8k_item_bodies_no_trailing_period_format():
 def test_8k_no_items_yields_empty_dict_not_error():
     bodies = extract_8k_item_bodies("<html><body><p>No items here.</p></body></html>")
     assert bodies == {}
+
+
+def test_item_9a_material_weakness_extracted_from_real_10ka():
+    """A real 10-K/A (CIK 1856031, accession 0000950170-23-019093) amending
+    Item 9A to disclose a material weakness."""
+    sections = extract_10k_sections(_read("vividseats_10k_material_weakness_sample.html"))
+    controls = sections["item_9a_controls"]
+    assert controls is not None
+    assert controls.startswith("Item 9A.")
+    assert "material weakness" in controls.lower()
+
+
+def test_item_9a_clean_control_extracted_with_no_material_weakness():
+    """AAPL's real Item 9A is present and found, but discloses no material
+    weakness — the paired negative control for the case above."""
+    sections = extract_10k_sections(_read("aapl_10k_item1_1a_7.html"))
+    controls = sections["item_9a_controls"]
+    assert controls is not None
+    assert "material weakness" not in controls.lower()
+
+
+def test_looks_like_transcript_body_true_for_real_transcript_exhibit():
+    """A real earnings-call transcript furnished as an 8-K exhibit (CIK
+    1130713, accession 0001130713-15-000020) — NOT the primary 8-K document
+    itself, which only says a transcript was furnished; the real transcript
+    text lives in a separate exhibit file."""
+    text = extract_plain_text(_read("overstock_8k_transcript_sample.html"))
+    assert looks_like_transcript_body(text) is True
+
+
+def test_looks_like_transcript_body_false_for_ordinary_8k_item_bodies():
+    for fixture, item in (
+        ("mbuu_8k_item502_sample.html", "5.02"),
+        ("predictivetech_8k_item401_sample.html", "4.01"),
+        ("emergentbio_8k_item402_sample.html", "4.02"),
+    ):
+        bodies = extract_8k_item_bodies(_read(fixture))
+        assert looks_like_transcript_body(bodies[item]) is False
+
+
+def test_looks_like_transcript_body_false_for_empty_text():
+    assert looks_like_transcript_body("") is False

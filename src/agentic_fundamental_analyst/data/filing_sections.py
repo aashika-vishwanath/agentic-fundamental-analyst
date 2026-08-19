@@ -29,6 +29,16 @@ _ITEM_10K_START_RE = re.compile(r"^item\s+(\d+[a-c]?)\.", re.IGNORECASE)
 _ITEM_8K_RE = re.compile(r"\bItem\s+(\d+\.\d+)\.?\s*")
 _ANCESTOR_SEARCH_DEPTH = 8
 
+# Transcript-exhibit detection (Phase 2). Vendor-formatted earnings-call
+# transcripts (the real-world convention for the rare 8-K exhibit that is
+# one at all) put the speaker's name/role on its own line rather than a
+# "Name:" prefix -- confirmed against a real captured transcript exhibit
+# (tests/golden/overstock_8k_transcript_sample.html), which has 8 exact
+# "Operator"-only lines and 0 "Name:"-style lines. An ordinary 8-K item body
+# (press release, disclosure text) has zero standalone "Operator" lines.
+_QA_MARKER_RE = re.compile(r"question[\s-]+and[\s-]+answer", re.IGNORECASE)
+_MIN_OPERATOR_ONLY_LINES = 2
+
 
 def _is_real_header(node: NavigableString) -> bool:
     """True if `node` sits in a bold element that isn't inside a hyperlink
@@ -86,6 +96,7 @@ def extract_10k_sections(html: str) -> dict[str, str | None]:
         "item_1_business": sections.get("1") or None,
         "item_1a_risk_factors": sections.get("1A") or None,
         "item_7_mdna": sections.get("7") or None,
+        "item_9a_controls": sections.get("9A") or None,
     }
 
 
@@ -105,3 +116,24 @@ def extract_8k_item_bodies(html: str) -> dict[str, str]:
         if item_number not in bodies:
             bodies[item_number] = text[start:end].strip()
     return bodies
+
+
+def extract_plain_text(html: str) -> str:
+    """Generic HTML -> newline-joined plain text, for documents with no
+    Item N.NN structure to segment on (a transcript or press-release
+    exhibit — a *separate* document within the accession, distinct from the
+    primary 8-K's own Item N.NN cover text that extract_8k_item_bodies
+    parses)."""
+    soup = BeautifulSoup(html, "lxml")
+    return soup.get_text("\n")
+
+
+def looks_like_transcript_body(text: str) -> bool:
+    """True if `text` looks like a real call-transcript exhibit rather than
+    a press release or other 8-K exhibit. False negatives are safe (surfaces
+    as a coverage gap, never a wrong answer); this is intentionally
+    conservative against false positives, since those would hand the
+    Transcript Analyst non-transcript text to interpret."""
+    operator_only_lines = sum(1 for line in text.splitlines() if line.strip() == "Operator")
+    has_qa_marker = bool(_QA_MARKER_RE.search(text))
+    return operator_only_lines >= _MIN_OPERATOR_ONLY_LINES and has_qa_marker

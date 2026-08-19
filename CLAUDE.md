@@ -4,33 +4,20 @@
 
 Given a US-listed, SEC-filing, non-financial operating company ticker, this system produces a grounded investment memo with a Buy/Hold/Sell recommendation. Architecture: a fixed deterministic pipeline (plain async Python) with agentic islands — single-shot document-grounded agents for interpretation, and exactly one real agentic loop (the Investigator, with web search) for anomaly investigation. Full detail, rationale, and the complete agent/data/phase spec: **`PRD.md`** — this file is constraints and pointers only, never a substitute for it.
 
-Status: Phase 1 implemented and live-validated against a real ticker (GOOGL) and a real Anthropic model; two real findings surfaced during that validation are open for a decision (see Current State) before the phase is fully closed. `pyproject.toml` exists (uv-managed); `src/agentic_fundamental_analyst/` has the full deterministic data layer plus the first agent. The Conventions section below now reflects code that exists, not just a plan.
+Status: Phases 0, 1, and 2 complete and tested. `pyproject.toml` exists (uv-managed); `src/agentic_fundamental_analyst/` has the full deterministic data layer plus four agents (Financial Statements, Filings, Transcript Analysts + Flag Consolidator). The Conventions section below reflects code that exists, not just a plan.
 
 ---
 
 ## Current State
 
-**Last completed phase**: Phase 1 — Financial Statements Analyst. Code-complete, all 4 validation levels executed and green, both real bugs found during live validation root-caused and fixed (not deferred). `EdgarClient` (Phase 0) now emits cleaner data as a result — see below.
-- **New contracts**: `contracts/sourcing.py` (`SourcedFigure`), `contracts/flags.py` (`Severity`, `Flag` — generic, reused by later analysts), `contracts/financial_analyst.py` (`FlagCandidate`, `FinancialAnalystAgentOutput`, `FinancialAnalystOutput`), `contracts/ratios.py` extended with `PeriodRatios`/`RatioTrendBundle`.
-- **New deterministic layer**: `ratios.compute_period_ratios()` / `compute_trend_bundle()` — turns `FinancialStatementBundle` into `RatioTrendBundle`, annual (10-K) periods only. Deliberately **not** quarterly yet — see Known Gaps below on why 10-Q periods aren't safe to include today.
-- **First agent**: `agents/financial_statements.py` — `financial_statements_analyst` (Claude Sonnet, single-shot, no tools) plus `run_financial_statements_analyst()`. Grounding is enforced structurally: the agent's own output type never carries a numeric value, only `(metric, fiscal_year, fiscal_period)` candidates; deterministic code looks up the real value and drops anything that doesn't resolve. Live-verified against GOOGL and AAPL — sensible summaries, correctly zero flags on AAPL's genuinely clean history, correctly escalating capex-intensity flags on GOOGL's real 2021-2025 buildout, zero dropped candidates in both. See `.agents/plans/phase-1-financial-statements-analyst.md` for full design rationale.
-- **Logfire wired up**: yes. `observability.py` calls `logfire.configure(send_to_logfire="if-token-present")` + `logfire.instrument_pydantic_ai()` at import time; confirmed safe to import with zero env vars set, and confirmed producing real traces at `https://logfire-us.pydantic.dev/aashikavishwanath/fundamental-analyst` (`financial_statements_analyst_stage` span → nested `financial_statements_analyst` agent-run span → `chat claude-sonnet-5` model-call span).
-- **Model string confirmed working**: `'anthropic:claude-sonnet-5'` made real, successful calls throughout — the plan's flagged unverified-string risk is resolved.
-- **Eval dataset**: `evals/financial_statements.py`, 6 cases (`clean_financials_no_flags`, `receivables_outpacing_revenue`, `capex_spike_flagged`, `weak_cash_conversion`, `high_beneish_m_score`, `single_period_coverage_gap`), each with hand-verified expected ratio values. **Final run against the real model: 6/6 on all three evaluators** — `flags_grounded` (hard gate), `ExpectedFlagsPresent` (recall), and `LLMJudge` (summary quality) all 100%.
-- **Two implementation gotchas found and fixed, not anticipated in the plan**: (1) `pydantic_ai.Agent('anthropic:...', ...)` eagerly validates `ANTHROPIC_API_KEY` at *construction* time, not `.run()` time — fixed via `tests/conftest.py` (placeholder key + `ALLOW_MODEL_REQUESTS = False`, no real network call possible in `tests/unit`). (2) `pydantic_evals.evaluators.LLMJudge` defaults to an OpenAI model — fixed by pinning `model=FINANCIAL_STATEMENTS_ANALYST_MODEL` explicitly.
-- **One eval-quality fix, applied after user sign-off**: the `LLMJudge` summary-quality rubric was ambiguous about *which fiscal year* a coverage gap applies to, causing 2/6 false-negative judgments (the judge over-generalized "this metric had a gap in an earlier period" to "never characterize this metric name at all"). Reworded to scope "coverage-gap-marked" to the exact fiscal year listed — confirmed 6/6 after the reword. Not silently patched — flagged to the user with the diagnosis first.
-- **Two real `EdgarClient` (Phase 0) bugs found via this phase's live validation, root-caused and fixed, not deferred**:
-  1. **Comparative-column `fiscal_year` mislabeling.** A 10-K's prior-year comparative income-statement columns (e.g. a FY2015 10-K showing FY2013/FY2014 for comparison) inherit that filing's own `fy` XBRL stamp when the period's own original filing isn't otherwise observed in the fetched data — so GOOGL's 2013/2014 periods were coming back labeled `fiscal_year=2015`. Fixed: for `form == "10-K"`, if the earliest-filed occurrence of a period arrived >120 days after `period_end` (too late to be that period's own filing), `fiscal_year` is derived from `period_end.year` instead of trusting the inherited `fy` stamp. Confirmed: every GOOGL/AAPL 10-K period's `fiscal_year` now exactly matches `period_end.year`.
-  2. **Quarterly-footnote contamination.** Pre-~2020, many 10-Ks included a "Selected Quarterly Financial Data" footnote; when XBRL-tagged, each quarter's revenue/net_income fact still carries `form="10-K"` despite a ~90-day duration, so `compute_trend_bundle`'s `form == "10-K"` filter was silently treating each quarterly footnote entry as its own spurious annual period. Confirmed present in real AAPL data (66 spurious `net_income` points, 6 spurious `revenue` points) — confirmed absent in GOOGL's, which is why GOOGL-only validation didn't catch it. Fixed: duration-type facts with `form == "10-K"` are now rejected unless their duration is 350-380 days. Verified: AAPL now returns exactly 19 clean annual periods (2007-2025), GOOGL exactly 13 (2013-2025), both with zero mislabeled/spurious periods.
-**Known Phase 0 gaps** (see `.agents/plans/phase-0-data-layer.md`'s Execution Deviations for full detail):
-- **Stooq is blocked, not implemented** — its CSV endpoint now requires solving a JS proof-of-work challenge (bot-detection change since it was researched). `PriceClient` wraps Tiingo only; `data/stooq.py` is a documented stub. Not a blocker (Stooq was always the backfill fallback, not primary).
-- **`cash_conversion_cycle()` is a permanent coverage gap** — `FiscalPeriod` has no `accounts_payable` field, so the DPO leg can never compute.
-- `FiscalPeriod` was extended 5 fields beyond the PRD's illustrative sketch (`cost_of_revenue`, `sga_expense`, `current_assets`, `ppe_gross`, `total_debt`) to support the full 8-component Beneish M-Score.
-- **10-Q periods cannot safely enter ratio-trend math yet** (found in Phase 1). `EdgarClient`'s duration de-dup (`data-layer.md` "bug #2") picks the shortest available reporting window per concept, but cash-flow-statement lines are frequently tagged YTD-only in 10-Qs with no discrete-quarter figure ever filed — so a `FiscalPeriod` for a 10-Q can end up with `operating_cash_flow` as a 9-month cumulative figure sitting next to a true single-quarter `net_income`, with nothing on the model recording the mismatch. This would silently corrupt `cash_conversion_ratio` and `sloan_accruals` for interior quarters. `compute_trend_bundle()` filters to `form == "10-K"` specifically because of this — not just to reduce Phase 1 scope. Needs a duration marker on `FiscalPeriod` before quarterly trend analysis is safe.
-- **`get_financial_statement_bundle`'s comparative-column and quarterly-footnote handling** — both fixed in Phase 1 (see above); the two `EdgarClient` bugs listed there predate Phase 1 but were only surfaced by it, so noting here for future readers grepping Phase 0 gaps specifically.
-**Next up**: Phase 2 — Filings Analyst, Transcript Analyst, Flag Consolidator.
-**Eval datasets passing**: `evals/financial_statements.py` — **6/6 on all three evaluators** (`flags_grounded`, `ExpectedFlagsPresent`, `LLMJudge`) against the real model. Unit/plumbing tests: **58 passing**, 100% network-free and key-free (49 from Phase 0 + 5 ratio-trend + 4 agent-plumbing).
-**Logfire wired up**: yes — confirmed producing real traces (see above).
+**Completed**: Phase 0 (deterministic data layer), Phase 1 (Financial Statements Analyst), Phase 2 (Filings Analyst, Transcript Analyst, Flag Consolidator). All built, tested, and live-verified — no known regressions or open issues.
+- Data layer: `EdgarClient`, `FredClient`, `PriceClient`, cache, `ratios.py`, `valuation.py`, `fetch_all()` (now returns a 5-tuple incl. `TranscriptInput | None`). `get_filing_sections()` now scans up to 12 recent 8-Ks (not just the latest) and a new `get_transcript_input()` discovers transcript exhibits via each 8-K's own file index — detail in `.agents/references/data-layer.md`.
+- Agents: `financial_statements.py` (Phase 1), `filings.py`/`transcript.py`/`flag_consolidator.py` (Phase 2). Two grounding mechanisms beyond Phase 1's numeric-table lookup: verbatim quoted-evidence substring checking (`agents/grounding.py`, prose input) for Filings/Transcript, and index-into-a-closed-list checking for the Consolidator. `Flag.source` is now `SourcedFigure | SourcedQuote`. Full rationale in `.agents/plans/phase-2-filings-transcript-consolidator.md`.
+- Logfire wired up and confirmed producing real traces for all four agents, incl. confirming the Transcript Analyst emits **no** span/model-call when no transcript is found (a structural guarantee, not an instructed one).
+**Known permanent gaps**: Stooq blocked (Tiingo-only pricing); `cash_conversion_cycle()` can't compute; 10-Q periods excluded from ratio-trend math; Filings Analyst checklist items #9/#14 only partially covered (single-filing visibility only, Item 8 audit opinion not parsed); DEF 14A/Forms 3/4/5 (checklist #10/#16) out of scope. Detail in `data-layer.md` and the Phase 2 plan.
+**Cost note**: Filings Analyst is meaningfully more expensive per call than the other three agents (~$0.13–$0.28 real-GOOGL cost, 65K-132K input tokens — a large 10-K's prose is much bigger than Phase 1's ratio JSON). No truncation built yet; watch this against the PRD's ~$2/run ceiling once Phase 5 wires the full pipeline.
+**Tests**: 89 unit tests passing (network-free, key-free). Eval datasets, all live-verified against the real model: `evals/financial_statements.py` 6/6 all evaluators; `evals/filings.py` 6/6 all evaluators; `evals/transcripts.py` grounding+recall 3/3, LLMJudge 2/3 (see Phase 2 plan's Execution Deviations — likely single-sample judge noise on an otherwise well-grounded summary, not re-tuned to force a pass); `evals/flag_consolidator.py` 3/3 (no judge — fully deterministic+recall).
+**Next up**: Phase 3 — the Investigator (the system's one agentic loop).
 
 This section is mandatory and unconditional to update — `/execute` must update it at the end of every phase/feature, regardless of whether any convention changed (see `execute.md` Final Verification). `/prime` cross-checks it against `git log`/`git status` rather than trusting it blindly, but it should never be allowed to go stale.
 
@@ -55,22 +42,27 @@ Never violate these. If a task seems to require violating one, stop and flag it 
 
 ## Conventions
 
-**Layout** (Phase 0 + Phase 1 built; `pipeline.py` lands in Phase 5):
+**Layout** (Phase 0 + 1 + 2 built; `pipeline.py` lands in Phase 5):
 ```
 src/agentic_fundamental_analyst/
   config.py       # loads .env once at import time (FRED_KEY, TIINGO_KEY, EDGAR_USER_AGENT, ANTHROPIC_API_KEY, LOGFIRE_TOKEN)
   observability.py # Logfire bring-up (logfire.configure + instrument_pydantic_ai), import-time, token-optional
   data/           # EdgarClient, FredClient, PriceClient, cache layer, filing_sections.py, fetch_all()
-  contracts/      # Pydantic models — financials, filings, macro, prices, intake, ratios, valuation, sourcing, flags, financial_analyst
-  agents/         # models.py (model-tier constants) + one module per agent role, exports a named Agent instance
-    financial_statements.py  # first agent: financial_statements_analyst, run_financial_statements_analyst()
+  contracts/      # Pydantic models — financials, filings, macro, prices, intake, ratios, valuation, sourcing, flags,
+                  # financial_analyst, transcripts, filings_analyst, transcript_analyst, consolidation
+  agents/         # models.py (model-tier constants) + grounding.py (shared quote-grounding) + one module per agent role
+    financial_statements.py  # Phase 1: financial_statements_analyst, run_financial_statements_analyst()
+    filings.py                # Phase 2: filings_analyst, run_filings_analyst(ticker, sections)
+    transcript.py               # Phase 2: transcript_analyst, run_transcript_analyst(ticker, transcript | None)
+    flag_consolidator.py         # Phase 2: flag_consolidator, run_flag_consolidator(all_flags)
+  flags.py        # deterministic exact-dedup (deduplicate_exact_flags) — Phase 2, sibling to ratios.py/valuation.py
   ratios.py       # deterministic ratio math (DSO, Sloan accruals, cash conversion, Beneish x8, trend computation)
   valuation.py    # deterministic DCF/comps math
   pipeline.py     # not yet built (Phase 5) — run_memo_pipeline(ticker), the orchestrator
-evals/            # Pydantic Evals Datasets, one file per agent — financial_statements.py is the first
+evals/            # Pydantic Evals Datasets, one file per agent, plus grounding.py (shared quote-grounding check)
 tests/
   conftest.py     # sets a placeholder ANTHROPIC_API_KEY + ALLOW_MODEL_REQUESTS=False before collection (see Current State gotcha)
-  unit/           # network-free unit tests (respx-mocked + TestModel), 58 passing
+  unit/           # network-free unit tests (respx-mocked + TestModel), 89 passing
   golden/         # golden-file fixtures (JSON API responses + trimmed real filing HTML)
 ```
 - **Contracts** live in `contracts/`, one module per logical group (flags, verdicts, memo). No model is defined inline inside an agent module.
@@ -83,32 +75,38 @@ tests/
 
 ## Commands
 
-All verified working, including live runs against real APIs (Phase 0) and a real Anthropic model (Phase 1).
+All verified working, including live runs against real APIs (Phase 0) and a real Anthropic model (Phase 1, Phase 2).
 
 - **Unit + plumbing tests** (network-free, key-free — the CI-safe suite, includes `TestModel`-based agent tests): `uv run pytest tests/unit -q`
 - **Lint**: `uv run ruff check .`
 - **Type-check**: `uv run pyright src tests evals`
 - **Clear the disk cache** (force fresh fetches): `uv run python -c "from agentic_fundamental_analyst.data.cache import clear_cache; clear_cache()"`
-- **Fetch one ticker live** (requires real `FRED_KEY`/`TIINGO_KEY` in `.env`):
+- **Fetch one ticker live** (requires real `FRED_KEY`/`TIINGO_KEY` in `.env`; returns a 5-tuple as of Phase 2):
   ```python
   import asyncio
   from agentic_fundamental_analyst.data.fetch import fetch_all
-  asyncio.run(fetch_all("GOOGL"))
+  asyncio.run(fetch_all("GOOGL"))  # -> (financials, filings, macro, prices, transcript | None)
   ```
-- **Run the Financial Statements Analyst on one ticker** (requires real `FRED_KEY`/`TIINGO_KEY`/`ANTHROPIC_API_KEY` in `.env`; live-verified against GOOGL):
+- **Run all four Stage-2/3 agents on one ticker end to end** (requires real `FRED_KEY`/`TIINGO_KEY`/`ANTHROPIC_API_KEY` in `.env`; live-verified against GOOGL and MBUU):
   ```python
   import asyncio
   from agentic_fundamental_analyst.data.fetch import fetch_all
   from agentic_fundamental_analyst.agents.financial_statements import run_financial_statements_analyst
+  from agentic_fundamental_analyst.agents.filings import run_filings_analyst
+  from agentic_fundamental_analyst.agents.transcript import run_transcript_analyst
+  from agentic_fundamental_analyst.agents.flag_consolidator import run_flag_consolidator
 
   async def main():
-      financials, *_ = await fetch_all("GOOGL")
-      result = await run_financial_statements_analyst(financials)
-      print(result.model_dump_json(indent=2))
+      financials, filings, macro, prices, transcript = await fetch_all("GOOGL")
+      fin_out = await run_financial_statements_analyst(financials)
+      filings_out = await run_filings_analyst("GOOGL", filings)
+      transcript_out = await run_transcript_analyst("GOOGL", transcript)
+      consolidated = await run_flag_consolidator(fin_out.flags + filings_out.flags + transcript_out.flags)
+      print(filings_out.model_dump_json(indent=2))
 
   asyncio.run(main())
   ```
-- **Run the Financial Statements Analyst's eval dataset** (requires real `ANTHROPIC_API_KEY`; live-verified — `flags_grounded`/`ExpectedFlagsPresent` 100%, `LLMJudge` 4/6, see Current State): `uv run python -m evals.financial_statements`
+- **Run an eval dataset** (requires real `ANTHROPIC_API_KEY`; live-verified scores in Current State): `uv run python -m evals.financial_statements` / `evals.filings` / `evals.transcripts` / `evals.flag_consolidator`
 - **Logfire auth** (one-time, interactive — run yourself, not scriptable): `uv run logfire auth`, then `uv run logfire projects new` (or `use`)
 - **Run the pipeline for one ticker**: not yet available — `pipeline.py`/`run_memo_pipeline()` land in Phase 5.
 
@@ -142,13 +140,14 @@ Layered, bottom-up — see PRD §8 for full detail:
 ## Key Files
 
 - **Data fetch entry point**: `src/agentic_fundamental_analyst/data/fetch.py` (`fetch_all(ticker)`) — gated on `TickerIntakeResult.in_scope`, raises `TickerOutOfScope` for excluded sectors before any other fetch.
-- **Contracts**: `src/agentic_fundamental_analyst/contracts/` — `financials.py`, `filings.py`, `macro.py`, `prices.py`, `intake.py`, `ratios.py`, `valuation.py`.
-- **EDGAR client**: `src/agentic_fundamental_analyst/data/edgar.py` — see `.agents/references/data-layer.md` for the four non-obvious XBRL merge bugs found and fixed here (2 from Phase 0, 2 more surfaced by Phase 1's live validation).
-- **Filing HTML parsing**: `src/agentic_fundamental_analyst/data/filing_sections.py` — bold/non-hyperlinked "Item N." heuristic, validated against two filers with different HTML conventions.
+- **Contracts**: `src/agentic_fundamental_analyst/contracts/` — `financials.py`, `filings.py`, `macro.py`, `prices.py`, `intake.py`, `ratios.py`, `valuation.py`, `sourcing.py` (`SourcedFigure`/`SourcedQuote`), `flags.py` (`Flag`/`Severity`), `financial_analyst.py`, `transcripts.py`, `filings_analyst.py`, `transcript_analyst.py`, `consolidation.py`.
+- **EDGAR client**: `src/agentic_fundamental_analyst/data/edgar.py` — see `.agents/references/data-layer.md` for the four non-obvious XBRL merge bugs (Phase 0/1) plus Phase 2's 8-K lookback-scan and transcript-exhibit-discovery extensions.
+- **Filing HTML parsing**: `src/agentic_fundamental_analyst/data/filing_sections.py` — bold/non-hyperlinked "Item N." heuristic (now incl. Item 9A), plus `looks_like_transcript_body()`/`extract_plain_text()` (Phase 2).
 - **Ratio/valuation math**: `src/agentic_fundamental_analyst/ratios.py` (incl. `compute_trend_bundle` — annual-only, see Current State gap note), `valuation.py`.
-- **First agent**: `src/agentic_fundamental_analyst/agents/financial_statements.py` (`financial_statements_analyst`, `run_financial_statements_analyst`) — grounding is enforced structurally; see `.agents/plans/phase-1-financial-statements-analyst.md` for why the agent's own output type never carries a numeric value.
+- **Cross-analyst flag dedup**: `src/agentic_fundamental_analyst/flags.py` (`deduplicate_exact_flags`) — Phase 2.
+- **Agents**: `agents/financial_statements.py` (Phase 1), `agents/filings.py`/`agents/transcript.py`/`agents/flag_consolidator.py` (Phase 2), `agents/grounding.py` (shared verbatim-quote check). See `.agents/plans/phase-1-financial-statements-analyst.md` and `.agents/plans/phase-2-filings-transcript-consolidator.md` for why each agent's output type is shaped the way it is.
 - **Logfire bring-up**: `src/agentic_fundamental_analyst/observability.py`.
-- **Eval dataset**: `evals/financial_statements.py`.
+- **Eval datasets**: `evals/financial_statements.py`, `evals/filings.py`, `evals/transcripts.py`, `evals/flag_consolidator.py`, `evals/grounding.py` (shared check).
 - **Pipeline entry point**: not yet created — lands in Phase 5.
 
 ---
@@ -166,4 +165,4 @@ Layered, bottom-up — see PRD §8 for full detail:
 | Valuation math (DCF, comps) | `.agents/references/valuation.md` |
 | Memo section structure, earnings-quality checklist, MVP section availability | `.claude/skills/investment-memo-writing/SKILL.md` |
 
-`data-layer.md`, `free-data-sources.md`, `valuation.md` (Phase 0), `agents.md`, and `observability.md` (Phase 1) are now filled in. `evals.md` remains a stub — fill in once evals have actually been run (currently blocked on a real `ANTHROPIC_API_KEY`; see Current State).
+`data-layer.md`, `free-data-sources.md`, `valuation.md` (Phase 0), `agents.md`, `observability.md` (Phase 1), and `evals.md` (Phase 2) are now filled in.

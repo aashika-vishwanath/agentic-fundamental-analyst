@@ -1,0 +1,65 @@
+{
+  "cik": "1130713",
+  "entityType": "operating",
+  "sic": "5961",
+  "sicDescription": "Retail-Catalog & Mail-Order Houses",
+  "name": "OVERSTOCK.COM, INC.",
+  "tickers": [
+    "OSTK"
+  ],
+  "exchanges": [
+    "Nasdaq"
+  ],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001130713-15-000020"
+      ],
+      "filingDate": [
+        "2015-05-01"
+      ],
+      "reportDate": [
+        "2015-04-27"
+      ],
+      "acceptanceDateTime": [
+        "2015-05-01T10:51:24.000Z"
+      ],
+      "act": [
+        "34"
+      ],
+      "form": [
+        "8-K"
+      ],
+      "fileNumber": [
+        "000-25259"
+      ],
+      "filmNumber": [
+        ""
+      ],
+      "items": [
+        "2.02,9.01"
+      ],
+      "core_type": [
+        "8-K"
+      ],
+      "size": [
+        25477
+      ],
+      "isXBRL": [
+        0
+      ],
+      "isInlineXBRL": [
+        0
+      ],
+      "isXBRLNumeric": [
+        null
+      ],
+      "primaryDocument": [
+        "a8-kq115earningscalltransc.htm"
+      ],
+      "primaryDocDescription": [
+        "8-K"
+      ]
+    }
+  }
+}

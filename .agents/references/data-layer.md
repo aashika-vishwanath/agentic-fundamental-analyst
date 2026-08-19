@@ -1,6 +1,6 @@
 # Data Layer — Implementation Reference
 
-Status: built, Phase 0 complete. Covers `EdgarClient`/`FredClient`/`PriceClient`,
+Status: Phase 0 + Phase 2 extensions complete. Covers `EdgarClient`/`FredClient`/`PriceClient`,
 the cache layer, filing-section parsing, XBRL tag aliases, SIC exclusion, and
 `fetch_all()` — as actually built, not as researched. For source API research
 (endpoints, rate limits, auth), see `free-data-sources.md`.
@@ -111,9 +111,70 @@ phase earlier than usual):
    periods (2007-2025), GOOGL exactly 13 (2013-2025), zero spurious or
    mislabeled periods in either.
 
-`get_filing_sections(cik10)` parses the latest 10-K's Item 1/1A/7 and the
-latest 8-K's item bodies — see `filing_sections.py` below for the parsing
-approach. Coverage gaps are per-field, never a blanket failure.
+`get_filing_sections(cik10)` parses the latest 10-K's Item 1/1A/7/9A and item
+bodies merged from a **lookback scan of up to 12 recent 8-Ks** (Phase 2 — see
+below), not just the single latest. Coverage gaps are per-field, never a
+blanket failure.
+
+## Phase 2: 8-K lookback scan and transcript-exhibit discovery (`data/edgar.py`)
+
+**Why the single-latest-8-K design (Phase 0/1) had to change**: checklist
+items tied to specific, rare 8-K item types (auditor change 4.01, officer
+turnover 5.02, restatement 4.02) would almost never surface if the single
+latest 8-K on file happens to be something routine (an earnings release,
+Reg FD disclosure) instead — which it usually is.
+
+**`_recent_filings(cik10, form, limit)`** generalizes the old `latest_filing()`
+to return up to `limit` filings of a form, most-recent-first (now also
+carrying `reportDate`, confirmed as the real SEC field name against a live
+payload — `latest_filing()` never extracted it before). `get_filing_sections()`
+scans `_RECENT_8K_LOOKBACK = 12` recent 8-Ks and merges their
+`extract_8k_item_bodies()` results into the same `eightk_item_bodies: dict[str,
+str]` shape as before (most-recent-wins per item number — confirmed live: two
+different 8-Ks in the same scan can both carry `"9.01"`, and the newer one's
+body wins). New `eightk_item_sources: dict[str, EightKItemSource]` records
+which accession/filed_date each surviving item number actually came from —
+needed so a filing-derived `Flag` can be given a real `fiscal_year` (see
+`agents.md`'s Filings Analyst section). `FilingSections` also gained
+`filed_date`/`period_of_report` (the 10-K's own) and `item_9a_controls`
+(`extract_10k_sections()`'s boundary-detection already finds every item
+header; Phase 0 just discarded everything except 1/1A/7 from its result dict —
+Phase 2 kept one more key).
+
+**A transcript is never embedded in 8-K item body text.** Discovered live
+against a real transcript-bearing 8-K (CIK 1130713, accession
+0001130713-15-000020): the primary document's own Item 2.02/9.01 text only
+says "a transcript is furnished as Exhibit 99.1" — the real transcript is a
+*separate document* (`ex991q115earningscalltrans.htm`) within the same
+accession, invisible to `extract_8k_item_bodies()` entirely. This wasn't
+anticipated by the Phase 2 plan (which assumed the transcript would show up
+as an item body) and was corrected during execution.
+
+**`get_transcript_input(cik10)`** fixes this: for each of the
+`_RECENT_8K_LOOKBACK` recent 8-Ks, it fetches the accession's own file index
+(a new cached endpoint, `.../{accession}/index.json` — lists every document
+filed under that accession, including exhibits) via
+`_accession_exhibit_documents()`, filters to `.htm`/`.html` files excluding
+the primary document and the index/header/full-submission-text files, fetches
+each candidate, and checks `filing_sections.looks_like_transcript_body()`
+against its plain text (`extract_plain_text()` — generic HTML-to-text, for
+documents with no `Item N.NN` structure to segment on). Returns the first
+match or `None` after exhausting the window — an explicit, expected outcome
+(PRD §7's ~20-30% coverage estimate), never an error.
+
+**`looks_like_transcript_body()` heuristic** (`filing_sections.py`) — also
+corrected from the Phase 2 plan's original design during execution, after
+testing against the real transcript exhibit above. The plan assumed speaker
+turns would look like `"Name: ..."`; the real transcript (a standard
+vendor-formatted earnings-call transcript) instead puts the speaker's
+name/role on its own line, with **zero** colon-prefixed speaker lines. What
+*is* reliably present: the word "Operator" appears as its own standalone
+line 8 times (a real ordinary 8-K item body has zero); a "question-and-answer"
+section marker is also present. Final heuristic: `>= 2` standalone `"Operator"`
+lines **and** a question-and-answer marker — both signals independently
+confirmed live against the real fixture and against three unrelated real 8-K
+item bodies (auditor-change, officer-departure, restatement — zero false
+positives).
 
 ## Filing section parsing (`data/filing_sections.py`)
 
@@ -207,6 +268,40 @@ Gated on `TickerIntakeResult.in_scope` — raises `TickerOutOfScope` (not a
 this codebase's existing typed-exception pattern — `EdgarError`,
 `FredError`, `TiingoError`) before any other fetch for an excluded ticker.
 Returns `(FinancialStatementBundle, FilingSections, list[MacroSeriesBundle],
-PriceHistory)` — a list of macro bundles (one per FRED series in
-`_MACRO_SERIES_IDS`), not a single bundle, since a memo needs several
-series (10Y yield, Fed funds, 10Y-2Y spread).
+PriceHistory, TranscriptInput | None)` — a 5-tuple as of Phase 2 (added
+`get_transcript_input()`'s result). Macro is a list of bundles (one per FRED
+series in `_MACRO_SERIES_IDS`), not a single bundle, since a memo needs
+several series (10Y yield, Fed funds, 10Y-2Y spread).
+
+## Phase 2 golden fixtures
+
+All real, captured live (per this project's "never hand-constructed" golden-file
+rule) via a properly-`User-Agent`-headered `curl`/`httpx` request — a plain
+unauthenticated fetch of `sec.gov` (e.g. a generic web-fetch tool) returns HTTP
+403, same bot-detection posture as Stooq (Phase 0):
+- `overstock_8k_transcript_sample.html` — the real Ex-99.1 transcript exhibit
+  (CIK 1130713, accession 0001130713-15-000020), `overstock_8k_primary_sample.html`
+  — that accession's primary 8-K document (for contrast — has no transcript-shaped
+  text itself), `overstock_submissions_sample.json` / `overstock_accession_index_sample.json`
+  — supporting fixtures for the full `EdgarClient.get_transcript_input()` test.
+  **Note**: this filing is old enough (2015) to have aged out of EDGAR's
+  `submissions.json` `filings.recent` array (which only retains recent history);
+  the trimmed submissions fixture's one entry was reconstructed from real,
+  independently-sourced values (the real accession/primaryDocument from the
+  live `index.json`, filingDate from that index's `last-modified` timestamp,
+  reportDate from the transcript's own stated call date) rather than lifted
+  directly from a live `recent` array the way the other fixtures were — flagged
+  here since it's a different sourcing path than every other golden fixture
+  in this repo.
+- `predictivetech_8k_item401_sample.html` (real auditor-dismissal 8-K),
+  `mbuu_8k_item502_sample.html` (real officer-departure/appointment 8-K, from
+  Malibu Boats' own real recent filing history), `emergentbio_8k_item402_sample.html`
+  (real restatement 8-K) — one real example per checklist-relevant 8-K item type.
+- `vividseats_10k_material_weakness_sample.html` — a real 10-K/A (CIK 1856031)
+  amending Item 9A to disclose a genuine material weakness.
+- `mbuu_10k_sample.html`, `mbuu_8k_latest_202_sample.html`,
+  `mbuu_8k_item502_sample.html`, `mbuu_submissions_sample.json` — one real
+  filer's (Malibu Boats) own 10-K plus two of its own real 8-Ks (one routine,
+  one 5.02, four positions back in the same filer's real 8-K history), used
+  together to test the lookback-scan merge end-to-end via `EdgarClient`
+  itself, not just the underlying parsing functions in isolation.

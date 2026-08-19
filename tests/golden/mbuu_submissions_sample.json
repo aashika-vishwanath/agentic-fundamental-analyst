@@ -1,0 +1,97 @@
+{
+  "cik": "0001590976",
+  "entityType": "operating",
+  "sic": "3730",
+  "sicDescription": "Ship & Boat Building & Repairing",
+  "name": "MALIBU BOATS, INC.",
+  "tickers": [
+    "MBUU"
+  ],
+  "exchanges": [
+    "Nasdaq"
+  ],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001590976-26-000015",
+        "0001590976-25-000117",
+        "0001590976-25-000080"
+      ],
+      "filingDate": [
+        "2026-05-07",
+        "2025-11-13",
+        "2025-08-28"
+      ],
+      "reportDate": [
+        "2026-05-07",
+        "2025-11-12",
+        "2025-06-30"
+      ],
+      "acceptanceDateTime": [
+        "2026-05-07T20:10:19.000Z",
+        "2025-11-13T12:03:54.000Z",
+        "2025-08-28T13:12:57.000Z"
+      ],
+      "act": [
+        "34",
+        "34",
+        "34"
+      ],
+      "form": [
+        "8-K",
+        "8-K",
+        "10-K"
+      ],
+      "fileNumber": [
+        "001-36290",
+        "001-36290",
+        "001-36290"
+      ],
+      "filmNumber": [
+        "26953295",
+        "251475350",
+        "251267987"
+      ],
+      "items": [
+        "2.02,9.01",
+        "5.02,7.01,9.01",
+        ""
+      ],
+      "core_type": [
+        "XBRL",
+        "XBRL",
+        "XBRL"
+      ],
+      "size": [
+        582598,
+        419161,
+        12665749
+      ],
+      "isXBRL": [
+        1,
+        1,
+        1
+      ],
+      "isInlineXBRL": [
+        1,
+        1,
+        1
+      ],
+      "isXBRLNumeric": [
+        0,
+        null,
+        null
+      ],
+      "primaryDocument": [
+        "mbuu-20260507.htm",
+        "mbuu-20251112.htm",
+        "mbuu-20250630.htm"
+      ],
+      "primaryDocDescription": [
+        "8-K",
+        "8-K",
+        "10-K"
+      ]
+    }
+  }
+}

@@ -19,6 +19,7 @@ from agentic_fundamental_analyst.agents.models import FINANCIAL_STATEMENTS_ANALY
 from agentic_fundamental_analyst.contracts.financial_analyst import FinancialAnalystOutput
 from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle, FiscalPeriod
 from agentic_fundamental_analyst.contracts.ratios import RatioTrendBundle
+from agentic_fundamental_analyst.contracts.sourcing import SourcedFigure
 from agentic_fundamental_analyst.ratios import compute_trend_bundle
 
 
@@ -217,7 +218,9 @@ class FinancialStatementsGroundingEvaluator(
             if period is None or result is None or result.value is None:
                 flags_grounded = False
                 continue
-            if abs(flag.source.value - result.value) > 1e-6:
+            if not isinstance(flag.source, SourcedFigure) or abs(
+                flag.source.value - result.value
+            ) > 1e-6:
                 flags_grounded = False
         return {
             "flags_grounded": flags_grounded,

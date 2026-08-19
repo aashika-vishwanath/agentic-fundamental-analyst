@@ -12,18 +12,21 @@ from datetime import date, timedelta
 
 import httpx
 
-from agentic_fundamental_analyst.contracts.filings import FilingSections
+from agentic_fundamental_analyst.contracts.filings import EightKItemSource, FilingSections
 from agentic_fundamental_analyst.contracts.financials import (
     CoverageGap,
     FinancialStatementBundle,
     FiscalPeriod,
 )
 from agentic_fundamental_analyst.contracts.intake import TickerIntakeResult
+from agentic_fundamental_analyst.contracts.transcripts import TranscriptInput
 from agentic_fundamental_analyst.data.cache import cached
 from agentic_fundamental_analyst.data.excluded_sic import classify_sic
 from agentic_fundamental_analyst.data.filing_sections import (
     extract_8k_item_bodies,
     extract_10k_sections,
+    extract_plain_text,
+    looks_like_transcript_body,
 )
 from agentic_fundamental_analyst.data.tag_aliases import TAG_ALIASES
 
@@ -67,6 +70,26 @@ _INSTANT_CONCEPTS = {
     "ppe_gross",
     "total_debt",
 }
+
+# get_filing_sections()'s 8-K fetching only ever looked at the single latest
+# 8-K (Phase 0/1). Checklist items tied to specific, rare 8-K item types
+# (auditor change 4.01, officer turnover 5.02, restatement 4.02 — Phase 2)
+# would almost never surface if the single latest 8-K on file happens to be
+# something routine (an earnings release, a Reg FD disclosure) instead —
+# which it usually is. Bounded to 12 so cost/latency stays predictable; each
+# fetch is disk-cached 7 days, so this is a one-time-per-ticker-per-week cost,
+# not a per-run one.
+_RECENT_8K_LOOKBACK = 12
+
+# A transcript is never embedded as 8-K item body text — it's furnished as a
+# *separate exhibit document* within the same accession (confirmed live
+# against a real transcript-bearing 8-K, CIK 1130713, accession
+# 0001130713-15-000020: the primary document only says "a transcript is
+# furnished as Exhibit 99.1"; the real transcript text is a sibling file,
+# ex991q115earningscalltrans.htm). Discovering exhibit filenames requires the
+# per-accession file index, not the submissions.json filings list (which only
+# records each filing's primaryDocument).
+_ACCESSION_NON_EXHIBIT_SUFFIXES = ("-index.html", "-index-headers.html", ".txt")
 
 
 class EdgarError(Exception):
@@ -163,6 +186,19 @@ async def _fetch_full_text_search(query: str, forms: tuple[str, ...]) -> dict:
     return data or {}
 
 
+@cached("edgar_accession_index", timedelta(days=7))
+async def _fetch_accession_index(cik10: str, accession_number: str) -> dict | None:
+    """Per-accession file index (every document filed under one accession,
+    including exhibits) — submissions.json's filings.recent only records
+    each filing's primaryDocument, not its exhibits, so this is the only way
+    to discover a transcript exhibit's filename."""
+    cik_no_zeros = cik10.lstrip("0") or "0"
+    accession_no_dashes = accession_number.replace("-", "")
+    return await _get_json(
+        f"https://www.sec.gov/Archives/edgar/data/{cik_no_zeros}/{accession_no_dashes}/index.json"
+    )
+
+
 def _zero_pad_cik(cik: str) -> str:
     return cik.strip().lstrip("0").zfill(10) if cik.strip() else cik
 
@@ -211,22 +247,60 @@ class EdgarClient:
         """Most recent filing of `form` (e.g. "10-K", "8-K") from the
         submissions payload's `filings.recent` arrays, or None if the filer
         has none on record. Raw dict (accessionNumber, primaryDocument,
-        filingDate, items) — not yet promoted to FilingMetadata since only
-        the fields get_filing_sections needs are used here.
+        filingDate, reportDate, items) — not yet promoted to FilingMetadata
+        since only the fields get_filing_sections needs are used here.
         """
+        recent = await self._recent_filings(cik10, form, limit=1)
+        return recent[0] if recent else None
+
+    async def _recent_filings(self, cik10: str, form: str, limit: int) -> list[dict]:
+        """Up to `limit` most recent filings of `form`, most recent first —
+        generalizes latest_filing() for the lookback scans below. Raw dicts
+        (accessionNumber, primaryDocument, filingDate, reportDate, items)."""
         submissions = await self.submissions(cik10)
         if submissions is None:
-            return None
+            return []
         recent = submissions.get("filings", {}).get("recent", {})
         forms = recent.get("form", [])
+        report_dates = recent.get("reportDate", [])
+        matches: list[dict] = []
         for i, filed_form in enumerate(forms):
-            if filed_form == form:
-                return {
+            if filed_form != form:
+                continue
+            report_date_raw = report_dates[i] if i < len(report_dates) else ""
+            matches.append(
+                {
                     "accessionNumber": recent["accessionNumber"][i],
                     "primaryDocument": recent["primaryDocument"][i],
                     "filingDate": recent["filingDate"][i],
+                    "reportDate": report_date_raw or None,
+                    "items": recent.get("items", [""] * len(forms))[i],
                 }
-        return None
+            )
+            if len(matches) >= limit:
+                break
+        return matches
+
+    async def _accession_exhibit_documents(
+        self, cik10: str, accession_number: str, primary_document: str
+    ) -> list[str]:
+        """.htm/.html documents filed under `accession_number`, excluding the
+        primary document and the index/header/full-submission-text files —
+        i.e. the exhibits. Empty list (never an error) if the index can't be
+        fetched or has none."""
+        index = await _fetch_accession_index(cik10, accession_number)
+        if index is None:
+            return []
+        items = index.get("directory", {}).get("item", [])
+        names = [item.get("name", "") for item in items]
+        return [
+            name
+            for name in names
+            if name
+            and name != primary_document
+            and name.lower().endswith((".htm", ".html"))
+            and not name.lower().endswith(_ACCESSION_NON_EXHIBIT_SUFFIXES)
+        ]
 
     def filing_document_url(self, cik10: str, accession_number: str, primary_document: str) -> str:
         cik_no_zeros = cik10.lstrip("0") or "0"
@@ -237,10 +311,12 @@ class EdgarClient:
         )
 
     async def get_filing_sections(self, cik10: str) -> FilingSections:
-        """Latest 10-K's Item 1/1A/7, plus the latest 8-K's item bodies if
-        one exists (opportunistic — PRD §7 notes 8-K exhibit coverage is
-        only ~20-30% of filers; absence is a CoverageGap, never an empty
-        section pretending to be found).
+        """Latest 10-K's Item 1/1A/7/9A, plus item bodies merged across a
+        bounded scan of the _RECENT_8K_LOOKBACK most recent 8-Ks (not just
+        the single latest — see the module-level comment on
+        _RECENT_8K_LOOKBACK for why). 8-K exhibit coverage in general is
+        opportunistic (PRD §7: only ~20-30% of filers use it); absence is a
+        CoverageGap, never an empty section pretending to be found.
         """
         coverage_gaps: list[CoverageGap] = []
 
@@ -251,32 +327,38 @@ class EdgarClient:
                 CoverageGap(field="item_1a_risk_factors", reason="no_10k_on_file")
             )
             coverage_gaps.append(CoverageGap(field="item_7_mdna", reason="no_10k_on_file"))
+            coverage_gaps.append(CoverageGap(field="item_9a_controls", reason="no_10k_on_file"))
             accession_number = ""
+            filed_date: date | None = None
+            period_of_report: date | None = None
             sections: dict[str, str | None] = {
                 "item_1_business": None,
                 "item_1a_risk_factors": None,
                 "item_7_mdna": None,
+                "item_9a_controls": None,
             }
         else:
             accession_number = ten_k["accessionNumber"]
+            filed_date = date.fromisoformat(ten_k["filingDate"])
+            report_date_raw = ten_k["reportDate"]
+            period_of_report = date.fromisoformat(report_date_raw) if report_date_raw else None
             url = self.filing_document_url(cik10, accession_number, ten_k["primaryDocument"])
             html = await _fetch_filing_html(url)
             if html is None:
-                coverage_gaps.append(
-                    CoverageGap(field="item_1_business", reason="10k_primary_document_fetch_failed")
-                )
-                coverage_gaps.append(
-                    CoverageGap(
-                        field="item_1a_risk_factors", reason="10k_primary_document_fetch_failed"
+                for field in (
+                    "item_1_business",
+                    "item_1a_risk_factors",
+                    "item_7_mdna",
+                    "item_9a_controls",
+                ):
+                    coverage_gaps.append(
+                        CoverageGap(field=field, reason="10k_primary_document_fetch_failed")
                     )
-                )
-                coverage_gaps.append(
-                    CoverageGap(field="item_7_mdna", reason="10k_primary_document_fetch_failed")
-                )
                 sections = {
                     "item_1_business": None,
                     "item_1a_risk_factors": None,
                     "item_7_mdna": None,
+                    "item_9a_controls": None,
                 }
             else:
                 sections = extract_10k_sections(html)
@@ -287,37 +369,82 @@ class EdgarClient:
                         )
 
         eightk_item_bodies: dict[str, str] = {}
-        eight_k = await self.latest_filing(cik10, "8-K")
-        if eight_k is None:
+        eightk_item_sources: dict[str, EightKItemSource] = {}
+        recent_8ks = await self._recent_filings(cik10, "8-K", _RECENT_8K_LOOKBACK)
+        if not recent_8ks:
             coverage_gaps.append(CoverageGap(field="eightk_item_bodies", reason="no_8k_on_file"))
         else:
-            url = self.filing_document_url(
-                cik10, eight_k["accessionNumber"], eight_k["primaryDocument"]
-            )
-            html = await _fetch_filing_html(url)
-            if html is None:
+            any_fetch_failed = False
+            for filing in recent_8ks:
+                url = self.filing_document_url(
+                    cik10, filing["accessionNumber"], filing["primaryDocument"]
+                )
+                html = await _fetch_filing_html(url)
+                if html is None:
+                    any_fetch_failed = True
+                    continue
+                bodies = extract_8k_item_bodies(html)
+                # Most-recent-wins: recent_8ks is already most-recent-first,
+                # so the first filing to claim an item number keeps it.
+                for item_number, body in bodies.items():
+                    if item_number not in eightk_item_bodies:
+                        eightk_item_bodies[item_number] = body
+                        eightk_item_sources[item_number] = EightKItemSource(
+                            accession_number=filing["accessionNumber"],
+                            filed_date=date.fromisoformat(filing["filingDate"]),
+                        )
+            if any_fetch_failed and not eightk_item_bodies:
                 coverage_gaps.append(
                     CoverageGap(
                         field="eightk_item_bodies", reason="8k_primary_document_fetch_failed"
                     )
                 )
-            else:
-                eightk_item_bodies = extract_8k_item_bodies(html)
-                if not eightk_item_bodies:
-                    coverage_gaps.append(
-                        CoverageGap(
-                            field="eightk_item_bodies", reason="no_item_headers_found_in_8k_body"
-                        )
+            elif not eightk_item_bodies:
+                coverage_gaps.append(
+                    CoverageGap(
+                        field="eightk_item_bodies", reason="no_item_headers_found_in_8k_body"
                     )
+                )
 
         return FilingSections(
             accession_number=accession_number,
+            filed_date=filed_date,
+            period_of_report=period_of_report,
             item_1_business=sections["item_1_business"],
             item_1a_risk_factors=sections["item_1a_risk_factors"],
             item_7_mdna=sections["item_7_mdna"],
+            item_9a_controls=sections["item_9a_controls"],
             eightk_item_bodies=eightk_item_bodies,
+            eightk_item_sources=eightk_item_sources,
             coverage_gaps=coverage_gaps,
         )
+
+    async def get_transcript_input(self, cik10: str) -> TranscriptInput | None:
+        """Scans the _RECENT_8K_LOOKBACK most recent 8-Ks for one exhibit
+        document whose text matches looks_like_transcript_body(). Returns
+        the first (most recent) match, or None if the window is exhausted —
+        an explicit, expected outcome per PRD §7's ~20-30% coverage
+        estimate, never an error and never a fabricated fallback.
+        """
+        recent_8ks = await self._recent_filings(cik10, "8-K", _RECENT_8K_LOOKBACK)
+        for filing in recent_8ks:
+            exhibit_names = await self._accession_exhibit_documents(
+                cik10, filing["accessionNumber"], filing["primaryDocument"]
+            )
+            for exhibit_name in exhibit_names:
+                url = self.filing_document_url(cik10, filing["accessionNumber"], exhibit_name)
+                html = await _fetch_filing_html(url)
+                if html is None:
+                    continue
+                text = extract_plain_text(html)
+                if looks_like_transcript_body(text):
+                    return TranscriptInput(
+                        accession_number=filing["accessionNumber"],
+                        filed_date=date.fromisoformat(filing["filingDate"]),
+                        exhibit_document=exhibit_name,
+                        text=text,
+                    )
+        return None
 
     async def get_ticker_intake(self, ticker: str) -> TickerIntakeResult:
         """Resolve ticker -> CIK -> SIC code, and check it against the

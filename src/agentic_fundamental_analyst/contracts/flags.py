@@ -2,7 +2,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-from agentic_fundamental_analyst.contracts.sourcing import SourcedFigure
+from agentic_fundamental_analyst.contracts.sourcing import SourcedFigure, SourcedQuote
 
 
 class Severity(str, Enum):
@@ -17,4 +17,7 @@ class Flag(BaseModel):
     fiscal_period: str
     severity: Severity
     description: str
-    source: SourcedFigure
+    # A numeric-ratio flag (Financial Statements Analyst) carries a SourcedFigure;
+    # a prose-derived flag (Filings/Transcript Analyst) carries a SourcedQuote —
+    # a fabricated numeric value for a non-numeric claim would be hollow typing.
+    source: SourcedFigure | SourcedQuote

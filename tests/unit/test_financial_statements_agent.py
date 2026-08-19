@@ -10,6 +10,7 @@ from agentic_fundamental_analyst.agents.financial_statements import (
 )
 from agentic_fundamental_analyst.contracts.financial_analyst import FinancialAnalystAgentOutput
 from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle, FiscalPeriod
+from agentic_fundamental_analyst.contracts.sourcing import SourcedFigure
 from agentic_fundamental_analyst.ratios import compute_trend_bundle
 
 PRIOR = FiscalPeriod(
@@ -102,6 +103,7 @@ async def test_run_financial_statements_analyst_grounds_real_candidate_and_drops
     assert real_flag.fiscal_year == 2024
     trend = compute_trend_bundle(TWO_PERIOD_BUNDLE)
     expected_value = trend.periods[-1].days_sales_outstanding.value
+    assert isinstance(real_flag.source, SourcedFigure)
     assert real_flag.source.value == pytest.approx(expected_value)
     assert real_flag.source.source == "ratios.days_sales_outstanding:TEST:2024FY"
     assert real_flag.source.as_of == date(2024, 12, 31)

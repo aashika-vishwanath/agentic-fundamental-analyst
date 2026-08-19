@@ -12,6 +12,8 @@ from agentic_fundamental_analyst.contracts.prices import PriceHistory
 from agentic_fundamental_analyst.data.cache import clear_cache
 from agentic_fundamental_analyst.data.fetch import TickerOutOfScope, fetch_all
 
+_EMPTY_INDEX = {"directory": {"item": []}}
+
 GOLDEN = Path(__file__).parent.parent / "golden"
 GOOGL_CIK10 = "0001652044"
 JPM_CIK10 = "0000019617"
@@ -73,6 +75,13 @@ async def test_in_scope_ticker_returns_fully_typed_bundle(monkeypatch):
     respx.get(
         "https://www.sec.gov/Archives/edgar/data/1652044/000119312526342390/d171253d8k.htm"
     ).mock(return_value=httpx.Response(200, text=_load_text("googl_8k_sample.html")))
+    # get_filing_sections()'s 8-K lookback scan and get_transcript_input()
+    # both fetch this same single 8-K in the trimmed googl_submissions.json
+    # fixture (it has only one 8-K entry) and its accession's exhibit index
+    # (empty — no transcript exhibit in this fixture, an expected outcome).
+    respx.get(
+        "https://www.sec.gov/Archives/edgar/data/1652044/000119312526342390/index.json"
+    ).mock(return_value=httpx.Response(200, json=_EMPTY_INDEX))
     respx.get("https://api.stlouisfed.org/fred/series/observations").mock(
         return_value=httpx.Response(200, json=_load_json("fred_dgs10_sample.json"))
     )
@@ -80,12 +89,13 @@ async def test_in_scope_ticker_returns_fully_typed_bundle(monkeypatch):
         return_value=httpx.Response(200, json=_load_json("tiingo_aapl_sample.json"))
     )
 
-    financials, filings, macro, prices = await fetch_all("GOOGL")
+    financials, filings, macro, prices, transcript = await fetch_all("GOOGL")
 
     assert isinstance(financials, FinancialStatementBundle)
     assert isinstance(filings, FilingSections)
     assert all(isinstance(m, MacroSeriesBundle) for m in macro)
     assert isinstance(prices, PriceHistory)
+    assert transcript is None
 
     assert financials.ticker == "GOOGL"
     assert filings.item_1_business is not None

@@ -57,15 +57,28 @@ score, if this shows up.
 filterable by ticker") is a pipeline-level concern; `pipeline.py` doesn't exist until Phase 5. This
 phase's span carries `ticker` locally as a stopgap, not as trace-wide baggage.
 
-**Status of live verification**: configuration is proven safe to import; a real trace has **not**
-yet been produced or inspected in this environment (blocked on `ANTHROPIC_API_KEY` — see CLAUDE.md
-Current State). Do this before considering Phase 1 fully closed: run the Financial Statements
-Analyst against a real ticker (Commands section has the exact snippet) and confirm in the Logfire
-UI: a `financial_statements_analyst_stage` span tagged `ticker`, a nested
-`financial_statements_analyst` agent-run span with `gen_ai.usage.*` and `operation.cost`
-populated, and `flag_count`/`dropped_candidate_count` on the outer span.
+**Status of live verification**: confirmed against real tickers (GOOGL, MBUU) for all four agents
+built so far (Phase 1 + Phase 2). Span structure, live-verified:
+`financial_statements_analyst_stage` → `financial_statements_analyst` run → `chat claude-sonnet-5`;
+`filings_analyst_stage` → `filings_analyst` run → `chat claude-sonnet-5`;
+`flag_consolidator_stage` → `flag_consolidator` run → `chat claude-haiku-4-5-20251001` — all with
+`gen_ai.usage.*`/`operation.cost` populated and `flag_count`/`dropped_candidate_count` (or
+`consolidated_group_count`/`dropped_group_reference_count` for the Consolidator) on the outer span.
+
+## Phase 2: the Transcript Analyst's *absent* span
+
+`transcript_analyst_stage` only appears in a trace when a transcript was actually found —
+confirmed live against both GOOGL and MBUU (neither has one in recent 8-K history; no span, no
+model call, appeared for either run). This is the Transcript Analyst's structural
+no-fabrication guarantee made visible in the trace: the `None` short-circuit in
+`run_transcript_analyst()` returns before `logfire.span(...)` is ever entered, not just before the
+model is called. If a `transcript_analyst_stage` span is ever *missing* from a trace where a real
+transcript should exist, that's a real bug to chase (the lookback scan or exhibit-discovery logic
+failing silently) — but its absence on a ticker with no transcript is expected, not an error.
 
 ## Dashboards, annotation workflow
 
-Not yet built — no real traces exist yet to build a dashboard against. Revisit once Level 4 above
-is done and a handful of real runs exist.
+Not yet built — `pipeline.py` (Phase 5) is what will generate enough real runs to make a dashboard
+worth building. Two real eval-fixture fixes this phase (see `evals.md`) are the annotation flywheel's
+first concrete instances, both caught by inspecting eval-run output directly rather than a production
+trace.
