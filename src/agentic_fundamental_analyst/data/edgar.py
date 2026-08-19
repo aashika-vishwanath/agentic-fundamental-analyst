@@ -31,6 +31,30 @@ _DEFAULT_USER_AGENT = "agentic-fundamental-analyst aashikavishwanath@gmail.com"
 _MIN_REQUEST_INTERVAL = 1.0 / 8.0  # ~8 req/s, under SEC's 10 req/s limit
 _MAX_RETRIES = 5
 
+# A 10-K's own original filing is always within ~120 days of its period_end
+# (the SEC deadline is 60-90 days depending on filer size; 120 gives slack).
+# If the earliest-filed occurrence of a (period_end, "10-K") key arrived later
+# than that, it wasn't that period's own filing — it's a prior-year
+# comparative column inside a *later* 10-K, which still carries that later
+# filing's own `fy` stamp (e.g. a FY2015 10-K's FY2013/FY2014 comparative
+# income-statement columns are tagged fy=2015 in the XBRL data, not fy=2013/
+# fy=2014). See get_financial_statement_bundle's post-loop correction below.
+_COMPARATIVE_COLUMN_FILING_LAG_DAYS = 120
+
+# Many 10-Ks (pre-~2020, when SEC required it) include a "Selected Quarterly
+# Financial Data" footnote — quarterly revenue/net income for the past two
+# years, disclosed *inside* the 10-K document. When XBRL-tagged, each
+# quarter's duration fact still carries form="10-K" (it's literally in that
+# document) even though its duration is ~90 days, not a full fiscal year.
+# Left unfiltered, each such quarter becomes its own spurious "annual" period
+# once form == "10-K" is used as a proxy for "this is the whole fiscal year"
+# (as compute_trend_bundle does). Confirmed present in real AAPL data (66
+# quarterly net_income points, 6 quarterly revenue points, all form="10-K");
+# confirmed absent for GOOGL, which is why it wasn't caught by GOOGL-only
+# validation. Only duration-type facts are affected — instant (balance-sheet)
+# concepts have no duration to mis-measure.
+_ANNUAL_DURATION_DAYS_RANGE = (350, 380)
+
 # XBRL "instant" facts (balance-sheet items, reported as of one date, no
 # start/end duration) vs. "duration" facts (income/cash-flow items, reported
 # over a start-end span) — duration facts need the YTD-vs-quarter filter,
@@ -381,6 +405,15 @@ class EdgarClient:
                     duration_days = (end - date.fromisoformat(start_raw)).days
                     if duration_days <= 0:
                         continue
+                    if form == "10-K" and not (
+                        _ANNUAL_DURATION_DAYS_RANGE[0]
+                        <= duration_days
+                        <= _ANNUAL_DURATION_DAYS_RANGE[1]
+                    ):
+                        # A short-duration fact inside a 10-K is quarterly
+                        # footnote data, not the annual figure — skip it
+                        # rather than let it masquerade as a fiscal year.
+                        continue
 
                 fy = point.get("fy")
                 fp = point.get("fp")
@@ -419,6 +452,24 @@ class EdgarClient:
                     if prior_duration is None or duration_days < prior_duration:
                         best_duration_by_field[field_key] = duration_days
                         row[concept] = point.get("val")
+
+        # Correct fiscal_year/fiscal_period for 10-K periods whose only
+        # observed occurrence is a later filing's comparative column (see
+        # _COMPARATIVE_COLUMN_FILING_LAG_DAYS above) — period_end.year is a
+        # safe, reliable fiscal-year label for an annual (form == "10-K",
+        # fiscal_period == "FY") period; not extended to 10-Qs, where
+        # non-calendar fiscal-year filers make that inference unsafe.
+        for key, row in periods_by_key.items():
+            end, form = key
+            filed = first_filed_by_key.get(key)
+            if (
+                form == "10-K"
+                and filed is not None
+                and filed != date.max
+                and (filed - end).days > _COMPARATIVE_COLUMN_FILING_LAG_DAYS
+            ):
+                row["fiscal_year"] = end.year
+                row["fiscal_period"] = "FY"
 
         periods = [
             FiscalPeriod(

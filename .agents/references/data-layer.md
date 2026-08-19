@@ -52,9 +52,12 @@ on 403/429.
 
 **`get_financial_statement_bundle(ticker, cik10)`** resolves all 13
 `TAG_ALIASES` concepts via `companyconcept`, one call per alias tried in
-order, and merges every filer's fact stream into `FiscalPeriod` rows. Two
-non-obvious bugs found and fixed by testing against live data (both are
-now regression-tested in `tests/unit/test_edgar_client.py`):
+order, and merges every filer's fact stream into `FiscalPeriod` rows. Four
+non-obvious bugs found and fixed by testing against live data (all four are
+now regression-tested in `tests/unit/test_edgar_client.py`; #3 and #4 were
+found during Phase 1's live validation of the Financial Statements Analyst,
+not Phase 0 itself — a case of PRD §9's annotation-to-fix flywheel firing one
+phase earlier than usual):
 
 1. **Dedup key is `(period_end, form)`, never the XBRL `fy`/`fp` stamp.**
    The same physical quarter is re-reported as a prior-year comparative in
@@ -72,6 +75,41 @@ now regression-tested in `tests/unit/test_edgar_client.py`):
    whichever candidate has the **shortest** duration — this picks the
    discrete quarter when one exists, and falls back to the real YTD figure
    (not a coverage gap) when that's the only thing the filer ever tagged.
+
+3. **Bug #1's "earliest-filed occurrence is authoritative for fy/fp" fallback
+   assumed the earliest filing to report a period is always that period's own
+   original 10-K — false when that period's own filing isn't independently
+   observed in the fetched concept history.** Then the *only* observation of
+   that `period_end` is a later filing's prior-year comparative column, whose
+   `fy` stamp reflects the later filing's own fiscal year, not the period it's
+   describing. Confirmed live: GOOGL's 2013 and 2014 periods came back labeled
+   `fiscal_year=2015`, inherited from the FY2015 10-K's comparative columns.
+   Fix: `_COMPARATIVE_COLUMN_FILING_LAG_DAYS = 120` — for `form == "10-K"`, if
+   the earliest-filed occurrence of a period arrived more than 120 days after
+   `period_end` (too late to be that period's own filing), `fiscal_year` is
+   derived from `period_end.year` instead of trusting the inherited `fy`
+   stamp. Scoped to 10-Ks only (`fiscal_period` is reliably `"FY"` there) —
+   not extended to 10-Qs, where non-calendar fiscal-year filers make
+   `period_end.year` an unsafe proxy for the quarter's fiscal year label.
+
+4. **Duration length was never validated for `form == "10-K"` facts, so a
+   10-K's own embedded "Selected Quarterly Financial Data" footnote (SEC-
+   required pre-~2020: quarterly revenue/net income disclosed inside the 10-K
+   itself) silently produced spurious "annual" periods.** Each footnote
+   quarter's duration fact still carries `form="10-K"` (it's literally in
+   that document) despite a ~90-day duration. Confirmed live: 66 spurious
+   `net_income` points and 6 spurious `revenue` points for AAPL, all
+   `form="10-K"`; confirmed **absent** for GOOGL (why GOOGL-only validation
+   didn't catch this the first time). This also silently corrupted the
+   *correct* annual figure whenever a quarterly footnote's `end` date
+   coincided with the fiscal year-end (bug #2's shortest-duration-wins
+   tiebreak would prefer the ~90-day footnote fact over the true ~365-day
+   annual one at that shared date) — not just an extra-periods problem. Fix:
+   `_ANNUAL_DURATION_DAYS_RANGE = (350, 380)` — a duration-type fact tagged
+   `form == "10-K"` is now rejected outright unless its duration falls in
+   that range. Verified post-fix: AAPL returns exactly 19 clean annual
+   periods (2007-2025), GOOGL exactly 13 (2013-2025), zero spurious or
+   mislabeled periods in either.
 
 `get_filing_sections(cik10)` parses the latest 10-K's Item 1/1A/7 and the
 latest 8-K's item bodies — see `filing_sections.py` below for the parsing

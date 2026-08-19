@@ -10,8 +10,8 @@ cannot compute the DPO leg — FiscalPeriod has no accounts_payable field
 rather than silently approximated; revisit if a later phase needs it.
 """
 
-from agentic_fundamental_analyst.contracts.financials import FiscalPeriod
-from agentic_fundamental_analyst.contracts.ratios import RatioResult
+from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle, FiscalPeriod
+from agentic_fundamental_analyst.contracts.ratios import PeriodRatios, RatioResult, RatioTrendBundle
 
 _DAYS_PER_YEAR = 365.0
 
@@ -275,3 +275,55 @@ def beneish_m_score(current: FiscalPeriod, prior: FiscalPeriod) -> RatioResult:
         - 0.327 * v["lvgi"]
     )
     return RatioResult(value=m_score)
+
+
+# --- Phase 1: trend computation over annual (10-K) periods ---------------
+#
+# Deliberately annual-only. Including 10-Q periods here would require ratios
+# spanning cash-flow-statement concepts (cash_conversion_ratio, sloan_accruals)
+# to trust that operating_cash_flow and net_income represent the same duration
+# for a given FiscalPeriod — which EdgarClient cannot currently guarantee: many
+# filers never tag a discrete-quarter cash-flow figure at all, so the
+# shortest-available-duration fallback (data-layer.md "bug #2") can leave a
+# 10-Q's operating_cash_flow as a 9-month YTD figure sitting next to a
+# single-quarter net_income, silently. See CLAUDE.md's Known Phase 0 gaps.
+
+
+def compute_period_ratios(current: FiscalPeriod, prior: FiscalPeriod | None) -> PeriodRatios:
+    no_prior = RatioResult(value=None, reason="no_prior_period_available")
+    return PeriodRatios(
+        fiscal_year=current.fiscal_year,
+        fiscal_period=current.fiscal_period,
+        period_end=current.period_end,
+        days_sales_outstanding=days_sales_outstanding(current),
+        receivables_growth_vs_revenue_growth=(
+            receivables_growth_vs_revenue_growth(current, prior) if prior is not None else no_prior
+        ),
+        inventory_growth_vs_cogs_growth=(
+            inventory_growth_vs_cogs_growth(current, prior) if prior is not None else no_prior
+        ),
+        sloan_accruals=sloan_accruals(current),
+        cash_conversion_ratio=cash_conversion_ratio(current),
+        capex_to_depreciation_ratio=capex_to_depreciation_ratio(current),
+        days_inventory_outstanding=days_inventory_outstanding(current),
+        cash_conversion_cycle=cash_conversion_cycle(current),
+        beneish_m_score=beneish_m_score(current, prior) if prior is not None else no_prior,
+        revenue=current.revenue,
+        net_income=current.net_income,
+        capex=current.capex,
+        depreciation_amortization=current.depreciation_amortization,
+    )
+
+
+def compute_trend_bundle(bundle: FinancialStatementBundle) -> RatioTrendBundle:
+    annual_periods = sorted(
+        (p for p in bundle.periods if p.form == "10-K"),
+        key=lambda p: p.period_end,
+    )
+    periods = [
+        compute_period_ratios(period, annual_periods[i - 1] if i > 0 else None)
+        for i, period in enumerate(annual_periods)
+    ]
+    return RatioTrendBundle(
+        ticker=bundle.ticker, cik=bundle.cik, periods=periods, coverage_gaps=bundle.coverage_gaps
+    )
