@@ -1,0 +1,80 @@
+{
+  "cik": "0001652044",
+  "name": "Alphabet Inc.",
+  "sic": "7370",
+  "sicDescription": "Services-Computer Programming, Data Processing, Etc.",
+  "tickers": [
+    "GOOGL",
+    "GOOG",
+    "GOOGM",
+    "GOOGN"
+  ],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001193125-26-342390",
+        "0001652044-26-000018"
+      ],
+      "filingDate": [
+        "2026-08-10",
+        "2026-02-05"
+      ],
+      "reportDate": [
+        "2026-08-10",
+        "2025-12-31"
+      ],
+      "acceptanceDateTime": [
+        "2026-08-10T20:10:48.000Z",
+        "2026-02-05T02:56:03.000Z"
+      ],
+      "act": [
+        "34",
+        "34"
+      ],
+      "form": [
+        "8-K",
+        "10-K"
+      ],
+      "fileNumber": [
+        "001-37580",
+        "001-37580"
+      ],
+      "filmNumber": [
+        "261258502",
+        "26600221"
+      ],
+      "items": [
+        "8.01,9.01",
+        ""
+      ],
+      "core_type": [
+        "XBRL",
+        "XBRL"
+      ],
+      "size": [
+        1090225,
+        15653193
+      ],
+      "isXBRL": [
+        1,
+        1
+      ],
+      "isInlineXBRL": [
+        1,
+        1
+      ],
+      "isXBRLNumeric": [
+        0,
+        null
+      ],
+      "primaryDocument": [
+        "d171253d8k.htm",
+        "goog-20251231.htm"
+      ],
+      "primaryDocDescription": [
+        "8-K",
+        "10-K"
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "cik": "0001099219",
+  "sic": "6311",
+  "sicDescription": "Life Insurance",
+  "tickers": [
+    "MET",
+    "MET-PA",
+    "MET-PE",
+    "MET-PF"
+  ]
+}

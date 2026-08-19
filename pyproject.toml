@@ -1,0 +1,51 @@
+[project]
+name = "agentic-fundamental-analyst"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Aashika Vishwanath", email = "aashikavishwanath@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "diskcache>=5.6.3",
+    "httpx>=0.28.1",
+    "lxml>=6.1.1",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "respx>=0.23.1",
+    "ruff>=0.16.3",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "live: hits a real external API; excluded from the default (network-free) run",
+]
+addopts = "-m 'not live'"
+filterwarnings = [
+    "ignore::bs4.XMLParsedAsHTMLWarning",
+]
+
+[tool.pyright]
+include = ["src", "tests"]
+typeCheckingMode = "basic"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["UP042"]  # (str, Enum) is this repo's PRD-specified enum convention
