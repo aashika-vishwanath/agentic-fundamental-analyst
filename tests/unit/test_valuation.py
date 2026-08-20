@@ -1,6 +1,10 @@
+from datetime import date
+
 import pytest
 
 from agentic_fundamental_analyst import valuation
+from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle, FiscalPeriod
+from agentic_fundamental_analyst.contracts.macro import MacroSeriesBundle, MacroSeriesPoint
 from agentic_fundamental_analyst.contracts.valuation import PeerFinancials
 
 CASH_FLOWS = [100.0, 110.0, 121.0]
@@ -109,3 +113,108 @@ def test_peer_median_ignores_none_values():
     result = valuation.peer_multiples(TARGET, [PEER_A, PEER_B])
     # peer_a ev_to_revenue = (1000+100-100)/400 = 2.5; peer_b's is None and excluded
     assert result.peer_median_ev_to_revenue == pytest.approx(2.5)
+
+
+def _annual_period(
+    fiscal_year: int, operating_cash_flow: float | None, capex: float | None
+) -> FiscalPeriod:
+    return FiscalPeriod(
+        fiscal_year=fiscal_year,
+        fiscal_period="FY",
+        form="10-K",
+        period_end=date(fiscal_year, 12, 31),
+        revenue=None,
+        net_income=None,
+        capex=capex,
+        depreciation_amortization=None,
+        accounts_receivable=None,
+        inventory=None,
+        total_assets=None,
+        operating_cash_flow=operating_cash_flow,
+        cost_of_revenue=None,
+        sga_expense=None,
+        current_assets=None,
+        ppe_gross=None,
+        total_debt=None,
+    )
+
+
+def test_trailing_free_cash_flows_oldest_first_annual_only():
+    bundle = FinancialStatementBundle(
+        ticker="TEST",
+        cik="0000000001",
+        periods=[
+            _annual_period(2024, operating_cash_flow=150.0, capex=50.0),
+            _annual_period(2022, operating_cash_flow=100.0, capex=40.0),
+            _annual_period(2023, operating_cash_flow=120.0, capex=45.0),
+            FiscalPeriod(
+                fiscal_year=2024,
+                fiscal_period="Q3",
+                form="10-Q",
+                period_end=date(2024, 9, 30),
+                revenue=None,
+                net_income=None,
+                capex=10.0,
+                depreciation_amortization=None,
+                accounts_receivable=None,
+                inventory=None,
+                total_assets=None,
+                operating_cash_flow=30.0,
+                cost_of_revenue=None,
+                sga_expense=None,
+                current_assets=None,
+                ppe_gross=None,
+                total_debt=None,
+            ),
+        ],
+        coverage_gaps=[],
+    )
+    flows = valuation.trailing_free_cash_flows(bundle)
+    assert flows == [60.0, 75.0, 100.0]  # 2022, 2023, 2024 — 10-Q excluded
+
+
+def test_trailing_free_cash_flows_none_when_fewer_than_two_usable_periods():
+    bundle = FinancialStatementBundle(
+        ticker="TEST",
+        cik="0000000001",
+        periods=[
+            _annual_period(2024, operating_cash_flow=150.0, capex=50.0),
+            _annual_period(2023, operating_cash_flow=None, capex=45.0),  # missing OCF
+        ],
+        coverage_gaps=[],
+    )
+    assert valuation.trailing_free_cash_flows(bundle) is None
+
+
+def test_build_valuation_assumptions_uses_latest_non_none_dgs10_point():
+    macro = [
+        MacroSeriesBundle(
+            series_id="DGS10",
+            points=[
+                MacroSeriesPoint(obs_date=date(2026, 8, 17), value=4.20),
+                MacroSeriesPoint(obs_date=date(2026, 8, 18), value=None),  # FRED "." sentinel
+                MacroSeriesPoint(obs_date=date(2026, 8, 16), value=4.10),
+            ],
+        ),
+        MacroSeriesBundle(series_id="FEDFUNDS", points=[]),
+    ]
+    assumptions = valuation.build_valuation_assumptions(macro)
+    assert assumptions is not None
+    assert assumptions.risk_free_rate == pytest.approx(0.042)
+    assert assumptions.risk_free_rate_as_of == date(2026, 8, 17)
+    assert assumptions.discount_rate == pytest.approx(0.042 + valuation._EQUITY_RISK_PREMIUM)
+    assert assumptions.terminal_growth == pytest.approx(valuation._TERMINAL_GROWTH_ASSUMPTION)
+
+
+def test_build_valuation_assumptions_none_when_dgs10_missing():
+    macro = [MacroSeriesBundle(series_id="FEDFUNDS", points=[])]
+    assert valuation.build_valuation_assumptions(macro) is None
+
+
+def test_build_valuation_assumptions_none_when_dgs10_all_none():
+    macro = [
+        MacroSeriesBundle(
+            series_id="DGS10", points=[MacroSeriesPoint(obs_date=date(2026, 8, 17), value=None)]
+        )
+    ]
+    assert valuation.build_valuation_assumptions(macro) is None

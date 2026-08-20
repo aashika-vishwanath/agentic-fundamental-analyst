@@ -31,6 +31,7 @@ async def fetch_all(
     ticker: str,
     price_start: date | None = None,
 ) -> tuple[
+    TickerIntakeResult,
     FinancialStatementBundle,
     FilingSections,
     list[MacroSeriesBundle],
@@ -39,6 +40,11 @@ async def fetch_all(
 ]:
     """Gated on TickerIntakeResult.in_scope — raises TickerOutOfScope before
     any other network call if the ticker is a bank/insurer/REIT (PRD §7).
+
+    Returns a 6-tuple as of Phase 4 (previously 5) — `intake` is now
+    returned rather than discarded after the exclusion check, since Phase
+    4's Sector/Macro agents need its sic_code/sic_description and this was
+    already resolved internally on every call.
     """
     edgar = EdgarClient()
     intake = await edgar.get_ticker_intake(ticker)
@@ -56,4 +62,4 @@ async def fetch_all(
 
     prices = await PriceClient().daily_prices(ticker, start=price_start)
 
-    return financials, filings, macro_bundles, prices, transcript
+    return intake, financials, filings, macro_bundles, prices, transcript

@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+  <feed xmlns="http://www.w3.org/2005/Atom">
+    <author>
+      <email>webmaster@sec.gov</email>
+      <name>Webmaster</name>
+    </author>
+<entry title="ARRAY(0x56131b582710)">
+      <content type="text/xml">
+        <company-info name="ARRAY(0x56131b5c54f0)">
+          <addresses>
+            <address type="business">
+              <state>CT</state>
+            </address>
+            <address type="mailing" />
+          </addresses>
+          <cik>0001595326</cik>
+          <irs-number></irs-number>
+          <sic>7370</sic>
+          <state>CT</state>
+        </company-info>
+      </content>
+      <id>urn:tag:www.sec.gov:cik=0001595326</id>
+      <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=0001595326&amp;owner=exclude&amp;hidefilings=0" type="text/html" />
+      <summary type="html">&lt;strong&gt;CIK:&lt;/strong&gt; 0001595326, &lt;strong&gt;State:&lt;/strong&gt; CT</summary>
+      <updated>2026-08-19T20:51:58-04:00</updated>
+    </entry>
+<entry title="ARRAY(0x56131b5c5268)">
+      <content type="text/xml">
+        <company-info name="ARRAY(0x56131b56c280)">
+          <addresses>
+            <address type="business">
+              <state>AZ</state>
+            </address>
+            <address type="mailing" />
+          </addresses>
+          <cik>0001730732</cik>
+          <irs-number>
+            <former-name-0 DATE="2021-05-14" NAME="GUURU Corp." />
+            <former-name-1 DATE="2020-11-16" NAME="Live Inc" />
+          </irs-number>
+          <last-date>06 Technology</last-date>
+          <sic>7370</sic>
+          <state>AZ</state>
+        </company-info>
+      </content>
+      <id>urn:tag:www.sec.gov:cik=0001730732</id>
+      <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=0001730732&amp;owner=exclude&amp;hidefilings=0" type="text/html" />
+      <summary type="html">&lt;strong&gt;CIK:&lt;/strong&gt; 0001730732, &lt;strong&gt;State:&lt;/strong&gt; AZ</summary>
+      <updated>2026-08-19T20:51:58-04:00</updated>
+    </entry>
+<entry title="ARRAY(0x56131b5c0ba8)">
+      <content type="text/xml">
+        <company-info name="ARRAY(0x56131b565970)">
+          <addresses>
+            <address type="business">
+              <state>F4</state>
+            </address>
+            <address type="mailing" />
+          </addresses>
+          <cik>0001525494</cik>
+          <irs-number></irs-number>
+          <sic>7370</sic>
+          <state>F4</state>
+        </company-info>
+      </content>
+      <id>urn:tag:www.sec.gov:cik=0001525494</id>
+      <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=0001525494&amp;owner=exclude&amp;hidefilings=0" type="text/html" />
+      <summary type="html">&lt;strong&gt;CIK:&lt;/strong&gt; 0001525494, &lt;strong&gt;State:&lt;/strong&gt; F4</summary>
+      <updated>2026-08-19T20:51:58-04:00</updated>
+    </entry>
+    <id>https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;SIC=7370&amp;type=10-K&amp;owner=include&amp;count=40</id>
+    <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;SIC=7370&amp;type=10-K&amp;owner=include&amp;count=40&amp;start=0&amp;output=atom" rel="self" type="application/atom+xml" />
+    <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;SIC=7370&amp;type=10-K&amp;owner=include&amp;count=40&amp;start=0" rel="alternate" type="text/html" />
+    <link href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;SIC=7370&amp;type=10-K&amp;owner=include&amp;count=40&amp;output=atom&amp;start=40" rel="next" type="application/atom+xml" />
+    <title>Company Search Feed</title>
+    <updated>2026-08-19T20:51:58-04:00</updated>
+  </feed>

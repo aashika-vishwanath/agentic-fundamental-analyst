@@ -71,3 +71,15 @@ TAG_ALIASES: dict[str, list[str]] = {
         "LongTermDebt",
     ],
 }
+
+# Peer-comps only (Phase 4), resolved standalone via EdgarClient.resolve_concept /
+# build_peer_financials — deliberately NOT merged into TAG_ALIASES above, since
+# get_financial_statement_bundle() iterates that dict wholesale to build every
+# FiscalPeriod; adding a concept there that FiscalPeriod has no field for would
+# spuriously mark it as a CoverageGap on every company that doesn't tag it.
+PEER_ONLY_TAG_ALIASES: dict[str, list[str]] = {
+    "cash_and_equivalents": [
+        "CashAndCashEquivalentsAtCarryingValue",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    ],
+}

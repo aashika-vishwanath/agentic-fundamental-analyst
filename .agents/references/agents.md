@@ -193,7 +193,70 @@ content — the closed-set-by-index idiom, same as the Flag Consolidator). *Weig
 as one story rather than stacking them as independent negatives is explicitly deferred to the Phase 5
 Synthesizer/Red-Team — see the plan's Notes → "Carried forward to Phase 5".
 
-## Not yet built (Phase 4+)
+## Sector Analyst, Macro Sensitivity Analyst, Valuation Interpreter (Phase 4)
 
-Sector Analyst, Macro Sensitivity Analyst, Valuation Interpreter, Synthesizer (draft + resolve),
-Red-Team — see PRD §4 roster and §12 phase plan.
+**Modules**: `agents/sector.py`, `agents/macro.py`, `agents/valuation_interpreter.py`. **Model**:
+`anthropic:claude-sonnet-5` for all three (PRD §4 roster tier), one constant per agent in
+`agents/models.py`. **Capabilities**: none — pure narration, no tools, not agentic loops, same
+profile as the Phase 1-2 analysts. Full design rationale in
+`.agents/plans/phase-4-sector-macro-valuation.md`.
+
+**What's structurally different from every prior agent**: none of the three produce `Flag`s. Their
+`output_type` narrates a small, already-fully-typed, already-computed deterministic bundle (peer
+multiples, macro series values, DCF scenario output) directly into free text — there is no
+candidate-then-promotion step, because there is no closed table or verbatim quote to promote
+against. Each agent's own `output_type` (`SectorAnalystAgentOutput` etc.) is narrower than the
+stage's return type (`SectorAnalystOutput` etc.) for a different reason than Phases 1-2's split,
+though: not to gate a promotion, but because the model was never trusted with metadata
+(`ticker`/`coverage_gaps`) the stage function rebuilds from the real input regardless — asking the
+model to produce it was pure surface area for a value that's always discarded.
+
+**Grounding — the fourth mechanism in this codebase**, after closed-table lookup (Phase 1),
+verbatim-quote checking (Phase 2), and URL provenance (Phase 3): `agents/numeric_grounding.py`.
+Every number appearing in a `summary` must be traceable, within tolerance, to a real number in the
+typed input, or a simple derived transform (percent difference or ratio) between two such numbers
+— the natural vocabulary of a *comparative* narrative ("trades at a 22% discount to peer median
+P/E"). Promoted from Phase 1's informational-only `_summary_numeric_grounding_ratio` prototype to
+a real, hard runtime gate: each `run_X()` function calls `summary_is_grounded()` after the agent
+call and, on failure, replaces the *whole* summary with a fixed fallback string plus a
+`CoverageGap(reason="numeric_grounding_check_failed")` — never ships unverified prose. This is a
+coarser failure mode than Phases 1-2's per-candidate drop (one bad number loses the whole
+narrative, not just the offending claim), an accepted tradeoff given there's no candidate structure
+to fall back to.
+
+**The numeric-extraction regex required real live-model validation to get right** — six distinct
+false-positive categories (Treasury-maturity labels like "10Y"/"10-year", comma-thousands
+separators, ISO dates, bare-hyphen ranges like "3.99%-4.02%", asymmetric percent-difference signs,
+and legitimate verbatim citations of non-quantity input fields like a SIC code) were each invisible
+to hand-written unit tests and only surfaced once the eval datasets ran against a real model — see
+the Phase 4 plan's Execution Deviations §3 for the full account and the fixes, all now permanent
+regression tests in `test_numeric_grounding.py`.
+
+**Sector Analyst** (`agents/sector.py`) narrates `SectorPeerData` — peer/segment positioning
+relative to a deterministically-discovered peer set (see `data-layer.md`'s Phase 4 section for the
+EDGAR SIC-based discovery pipeline). Explicitly *not* a general business-overview agent — memo §3
+(Business Overview) still needs the Phase 5 Synthesizer to read `FilingSections.item_1_business`
+directly; Sector Analyst's job is comparative multiples positioning only.
+
+**Macro Sensitivity Analyst** (`agents/macro.py`) narrates a `MacroAnalystInput` (a typed wrapper —
+`list[MacroSeriesBundle]` + `CompanyMacroProfile`, since every inter-stage boundary must be one
+typed model, never two positional arguments). `CompanyMacroProfile` is deliberately small, built
+from fields Phases 0-1 already fetch — no new data-layer fetching for this agent at all.
+
+**Valuation Interpreter** (`agents/valuation_interpreter.py`) narrates a `ValuationResult` — a
+trailing DCF (see `valuation.py`'s Phase 4 section) plus the *same* `PeerCompsResult` object Sector
+Analyst consumes (peer discovery runs once, deterministically, and feeds both agents — never
+duplicated). Its prompt explicitly requires the discount rate and terminal growth to be stated as
+disclosed assumptions, never as fact, per the investment-memo-writing skill's Section 6
+requirement — this is the one section of the memo the skill doc marks INCLUDED, not deferred, so
+getting this framing right in the prompt (and verified by the eval's LLMJudge rubric) mattered more
+here than in any prior agent.
+
+**Live-verified (GOOGL, 2026-08-19)**: all three agents produced grounded narratives on the first
+attempt in an end-to-end manual run — see the Phase 4 plan's Execution Deviations for the full
+account, including a real peer-discovery bug (feed page size vs. returned-candidate cap conflated)
+caught only by this live run, not by unit tests or the eval datasets' first pass.
+
+## Not yet built (Phase 5+)
+
+Synthesizer (draft + resolve), Red-Team — see PRD §4 roster and §12 phase plan.

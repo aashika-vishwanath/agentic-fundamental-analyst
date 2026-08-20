@@ -1,9 +1,9 @@
 # Data Layer — Implementation Reference
 
-Status: Phase 0 + Phase 2 extensions complete. Covers `EdgarClient`/`FredClient`/`PriceClient`,
-the cache layer, filing-section parsing, XBRL tag aliases, SIC exclusion, and
-`fetch_all()` — as actually built, not as researched. For source API research
-(endpoints, rate limits, auth), see `free-data-sources.md`.
+Status: Phase 0 + Phase 2 + Phase 4 extensions complete. Covers `EdgarClient`/`FredClient`/
+`PriceClient`, the cache layer, filing-section parsing, XBRL tag aliases, SIC exclusion,
+`fetch_all()`, and Phase 4's SIC-based peer discovery — as actually built, not as researched. For
+source API research (endpoints, rate limits, auth), see `free-data-sources.md`.
 
 ---
 
@@ -19,19 +19,25 @@ src/agentic_fundamental_analyst/
     prices.py                # PriceBar, PriceHistory
     intake.py                 # ExcludedSector, TickerIntakeResult
     ratios.py                  # RatioResult (value: float|None, reason: str|None)
-    valuation.py                # DCFScenario, DCFResult, PeerFinancials, PeerMultiples, PeerCompsResult
+    valuation.py                # DCFScenario, DCFResult, PeerFinancials, PeerMultiples,
+                                 # PeerCompsResult, ValuationAssumptions, ValuationResult (Phase 4)
   data/
     cache.py              # cached() decorator, diskcache-backed, keyed on (source, func, args, kwargs)
     excluded_sic.py         # bank/insurer/REIT SIC code -> ExcludedSector map
-    tag_aliases.py            # per-concept us-gaap tag fallback lists (13 concepts)
-    edgar.py                    # EdgarClient: submissions, XBRL concepts, filings, intake
+    tag_aliases.py            # per-concept us-gaap tag fallback lists (13 concepts) +
+                               # PEER_ONLY_TAG_ALIASES (Phase 4, cash_and_equivalents)
+    sic_lookup.py              # Phase 4: parse_sic_atom_feed() — pure XML parsing
+    edgar.py                    # EdgarClient: submissions, XBRL concepts, filings, intake,
+                                 # peers_by_sic/build_peer_financials (Phase 4)
     filing_sections.py            # pure HTML parsing: 10-K Item 1/1A/7, 8-K item bodies
     fred.py                        # FredClient
     tiingo.py                       # TiingoClient, PriceClient
     stooq.py                         # BLOCKED — see module docstring
-    fetch.py                          # fetch_all(ticker) -> gated on TickerIntakeResult.in_scope
+    peer_discovery.py                 # Phase 4: discover_sector_peers() orchestration
+    fetch.py                           # fetch_all(ticker) -> gated on TickerIntakeResult.in_scope
   ratios.py                # DSO, Sloan accruals, cash conversion, capex/D&A, Beneish (8 components), CCC
-  valuation.py              # dcf() bull/base/bear, peer_multiples()
+  valuation.py              # dcf() bull/base/bear, peer_multiples(), trailing_free_cash_flows(),
+                             # build_valuation_assumptions() (Phase 4)
 ```
 
 ## Cache layer (`data/cache.py`)
@@ -261,17 +267,100 @@ supplied base case. `present_value=None` (not a fabricated number) when
 company plus peer medians (`statistics.median`, `None`s excluded — a peer
 missing one input never zeroes out or skews the median).
 
+**Phase 4 additions**: `trailing_free_cash_flows(bundle)` — last N annual
+(10-K) `operating_cash_flow - capex`, oldest first, mirroring
+`ratios.py::compute_trend_bundle`'s exact annual-period filter; `None` if
+fewer than 2 usable periods. This is deliberately *not* a growth-projection
+model — the investment-memo-writing skill specifies a **trailing/LTM DCF**
+("filed cash flows"), so the last N years' real filed FCF is fed straight
+into the existing `dcf()` as if it were the next N years' projection, no
+forecasting step needed. `build_valuation_assumptions(macro_bundles)` —
+risk-free rate from the latest non-`None` `DGS10` FRED point (divided by
+100 — FRED reports a percentage like `4.20`, not a decimal) plus a fixed,
+disclosed `_EQUITY_RISK_PREMIUM = 0.055` / `_TERMINAL_GROWTH_ASSUMPTION =
+0.025` (conventional round numbers, not derived from any source — no free
+ERP data source exists); `None` (a full coverage gap) if `DGS10` is missing
+or entirely `None`-valued.
+
 ## `fetch_all()` (`data/fetch.py`)
 
 Gated on `TickerIntakeResult.in_scope` — raises `TickerOutOfScope` (not a
 `Union` return, unlike the plan's original sketch; kept consistent with
 this codebase's existing typed-exception pattern — `EdgarError`,
 `FredError`, `TiingoError`) before any other fetch for an excluded ticker.
-Returns `(FinancialStatementBundle, FilingSections, list[MacroSeriesBundle],
-PriceHistory, TranscriptInput | None)` — a 5-tuple as of Phase 2 (added
-`get_transcript_input()`'s result). Macro is a list of bundles (one per FRED
-series in `_MACRO_SERIES_IDS`), not a single bundle, since a memo needs
-several series (10Y yield, Fed funds, 10Y-2Y spread).
+Returns `(TickerIntakeResult, FinancialStatementBundle, FilingSections,
+list[MacroSeriesBundle], PriceHistory, TranscriptInput | None)` — a
+**6-tuple as of Phase 4** (previously 5; `intake` is now returned instead of
+discarded after the exclusion check, since Phase 4's Sector/Macro agents
+need its `sic_code`/`sic_description` and it was already resolved
+internally on every call). Macro is a list of bundles (one per FRED series
+in `_MACRO_SERIES_IDS`), not a single bundle, since a memo needs several
+series (10Y yield, Fed funds, 10Y-2Y spread).
+
+## Phase 4: SIC-based peer discovery (`data/sic_lookup.py`, `data/edgar.py`, `data/peer_discovery.py`)
+
+**`data/sic_lookup.py::parse_sic_atom_feed()`** parses SEC EDGAR's
+`browse-edgar?action=getcompany&SIC=...&output=atom` feed. **Confirmed live
+gotcha**: this feed's `<entry title="...">` and `<company-info name="...">`
+attributes are literal `"ARRAY(0x...)"` strings — a PHP/Perl
+array-to-string bug on SEC's own legacy CGI page, not usable for company
+name or ticker under any circumstance. Only `<cik>` is reliable per entry;
+ticker/name resolution happens separately via the already-cached
+`company_tickers.json` reverse index (`EdgarClient.peers_by_sic`).
+
+**`EdgarClient.peers_by_sic(sic_code, exclude_cik, limit)`** — a real bug,
+caught only by live validation against GOOGL/SIC-7370 (not by unit tests):
+the original implementation passed `limit` straight through as the SIC
+feed's own `count` param, conflating "how many raw candidates to fetch"
+with "how many usable pairs to return." Since most raw feed entries in
+registration order have no active ticker (shells/SPACs/delisted filers —
+confirmed live), a small `limit` (15) legitimately fetched a page where
+**zero** of the 15 raw candidates had a ticker at all. Fixed:
+`_SIC_FEED_PAGE_SIZE = 100` (the confirmed-working max page size) is always
+used for the feed fetch, decoupled from `limit`, which only caps the
+*returned*, ticker-matched pair count. See the Phase 4 plan's Execution
+Deviations §5 for the full account, including a related, non-bug finding:
+even with discovery working, a SIC-code-based peer set's *quality* is
+genuinely mixed (a broad SIC code spans micro-caps and large-caps alike) —
+both Sector Analyst and Valuation Interpreter correctly treat a
+low-quality/negative-earnings-skewed median as low-confidence rather than
+presenting it as a real signal, but this is a permanent limitation of pure
+SIC matching, not something the page-size fix addresses.
+
+**`EdgarClient.build_peer_financials(ticker, cik10, price)`** assembles a
+`PeerFinancials` via `_latest_annual_concept_value()` (revenue/net_income:
+latest 10-K annual value, same filter as `get_financial_statement_bundle`;
+total_debt/cash_and_equivalents: latest instant value regardless of form)
+and `latest_shares_outstanding()` (`us-gaap:CommonStockSharesOutstanding`
+via `company_concept()` directly — **confirmed live against GOOGL that this
+tag resolves to a single combined ~12B-share total despite Alphabet's
+multiple share classes, no per-class dimensional handling needed**; see
+`tests/golden/googl_shares_outstanding_concept.json`). Deliberately *not*
+added to `TAG_ALIASES`/`FiscalPeriod` — a new `PEER_ONLY_TAG_ALIASES` dict
+(`data/tag_aliases.py`) keeps `cash_and_equivalents` out of
+`get_financial_statement_bundle()`'s wholesale iteration, which would
+otherwise spuriously mark it as a `CoverageGap` on every company that
+doesn't tag it (caught before shipping, not live). `ebitda` is always
+`None` for peers — no reliable generic-peer EBITDA source exists;
+`PeerMultiples.ev_to_ebitda` already degrades to `None` gracefully.
+Returns `None` only when `price`/`shares_outstanding` can't be resolved
+(both non-`Optional` `PeerFinancials` fields) — that candidate is excluded
+from the peer set entirely, never included with a fabricated number.
+
+**`data/peer_discovery.py::discover_sector_peers()`** — the orchestration
+function tying the above together (SIC lookup → per-candidate price
+[`PriceClient`] + financials fetch, `asyncio.gather`-batched,
+`_PEER_FETCH_BATCH_SIZE = 5` at a time → `peer_multiples()`). Stops once
+`_TARGET_PEER_COUNT = 5` peers are assembled or
+`_MAX_PEER_CANDIDATES_TRIED = 15` candidates have been attempted. Fewer
+than `_MIN_PEER_COUNT_FOR_COMPS = 2` peers found is an explicit
+`CoverageGap`, not a crash — `peer_multiples()` already handles 0-1 peers
+gracefully via `_median_ignoring_none`. Raises `PeerDiscoveryError` only
+when the *target's own* `PeerFinancials` can't be built (a company with
+real filings and market data essentially always has a resolvable price and
+shares_outstanding, so this signals a genuine system problem, not a
+routine coverage gap — contrast with a candidate peer being unresolvable,
+which is expected/routine and simply excludes that candidate).
 
 ## Phase 2 golden fixtures
 
@@ -305,3 +394,13 @@ unauthenticated fetch of `sec.gov` (e.g. a generic web-fetch tool) returns HTTP
   one 5.02, four positions back in the same filer's real 8-K history), used
   together to test the lookback-scan merge end-to-end via `EdgarClient`
   itself, not just the underlying parsing functions in isolation.
+
+## Phase 4 golden fixtures
+
+- `sic7370_browse_edgar_sample.xml` — real, live-captured SEC EDGAR SIC-browse atom feed (SIC 7370,
+  GOOGL's own SIC code), trimmed to 3 entries + the real pagination footer. Confirms the feed's
+  `name`/`title` fields are unusable (`"ARRAY(0x...)"`) and that `<cik>` is the only reliable field.
+- `googl_shares_outstanding_concept.json` — real, live-captured, trimmed
+  `us-gaap:CommonStockSharesOutstanding` companyconcept payload for GOOGL, same shape/style as the
+  existing `googl_revenue_concept.json`. Confirms this tag resolves to one combined ~12B-share
+  figure for GOOGL despite its multiple share classes, no per-class dimensional handling needed.

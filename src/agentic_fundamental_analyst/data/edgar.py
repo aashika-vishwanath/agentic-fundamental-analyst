@@ -20,6 +20,7 @@ from agentic_fundamental_analyst.contracts.financials import (
 )
 from agentic_fundamental_analyst.contracts.intake import TickerIntakeResult
 from agentic_fundamental_analyst.contracts.transcripts import TranscriptInput
+from agentic_fundamental_analyst.contracts.valuation import PeerFinancials
 from agentic_fundamental_analyst.data.cache import cached
 from agentic_fundamental_analyst.data.excluded_sic import classify_sic
 from agentic_fundamental_analyst.data.filing_sections import (
@@ -28,7 +29,8 @@ from agentic_fundamental_analyst.data.filing_sections import (
     extract_plain_text,
     looks_like_transcript_body,
 )
-from agentic_fundamental_analyst.data.tag_aliases import TAG_ALIASES
+from agentic_fundamental_analyst.data.sic_lookup import parse_sic_atom_feed
+from agentic_fundamental_analyst.data.tag_aliases import PEER_ONLY_TAG_ALIASES, TAG_ALIASES
 
 _DEFAULT_USER_AGENT = "agentic-fundamental-analyst aashikavishwanath@gmail.com"
 _MIN_REQUEST_INTERVAL = 1.0 / 8.0  # ~8 req/s, under SEC's 10 req/s limit
@@ -69,6 +71,7 @@ _INSTANT_CONCEPTS = {
     "current_assets",
     "ppe_gross",
     "total_debt",
+    "cash_and_equivalents",  # Phase 4, peer-comps only — see PEER_ONLY_TAG_ALIASES
 }
 
 # get_filing_sections()'s 8-K fetching only ever looked at the single latest
@@ -90,6 +93,17 @@ _RECENT_8K_LOOKBACK = 12
 # per-accession file index, not the submissions.json filings list (which only
 # records each filing's primaryDocument).
 _ACCESSION_NON_EXHIBIT_SUFFIXES = ("-index.html", "-index-headers.html", ".txt")
+
+# SIC-based peer discovery (Phase 4). The browse-edgar atom feed's raw
+# candidates are mostly in registration/CIK order, not sorted by any measure
+# of "real, currently-traded company" — confirmed live: SIC 7370's first
+# several dozen entries are dominated by shells/SPACs/delisted filers with no
+# current ticker. 100 is the confirmed-working page size for this endpoint
+# (live-verified against SIC=7370, count=40 returned exactly 40 real
+# entries). This must stay decoupled from peers_by_sic's own `limit` param
+# (the number of *usable* pairs actually returned) — conflating the two was
+# a real bug caught during Phase 4 live validation (see peers_by_sic).
+_SIC_FEED_PAGE_SIZE = 100
 
 
 class EdgarError(Exception):
@@ -199,6 +213,20 @@ async def _fetch_accession_index(cik10: str, accession_number: str) -> dict | No
     )
 
 
+@cached("edgar_sic_company_list", timedelta(days=7))
+async def _fetch_sic_company_list(sic_code: str, count: int) -> str:
+    """Raw Atom XML text from EDGAR's SIC-based company browse feed (Phase 4
+    peer discovery). Single page only — see sic_lookup.py's module docstring
+    for the confirmed-live gotcha that this feed's name/title fields are
+    unusable; only <cik> is parsed out of the result."""
+    text = await _get_text(
+        "https://www.sec.gov/cgi-bin/browse-edgar"
+        f"?action=getcompany&SIC={sic_code}&type=10-K&dateb=&owner=include"
+        f"&count={count}&output=atom"
+    )
+    return text or ""
+
+
 def _zero_pad_cik(cik: str) -> str:
     return cik.strip().lstrip("0").zfill(10) if cik.strip() else cik
 
@@ -233,12 +261,141 @@ class EdgarClient:
     async def resolve_concept(self, cik10: str, concept: str) -> tuple[str, dict] | None:
         """Try every tag alias for `concept` (see tag_aliases.py) in order;
         return (tag_used, raw_payload) for the first that resolves, else None.
+        Checks TAG_ALIASES (FiscalPeriod concepts) then PEER_ONLY_TAG_ALIASES
+        (Phase 4 peer-comps-only concepts, e.g. cash_and_equivalents) — the
+        latter is never iterated by get_financial_statement_bundle, so reusing
+        this one generic resolver doesn't put peer-only concepts in that
+        method's coverage-gap blast radius (see tag_aliases.py docstring).
         """
-        for tag in TAG_ALIASES.get(concept, []):
+        aliases = TAG_ALIASES.get(concept) or PEER_ONLY_TAG_ALIASES.get(concept, [])
+        for tag in aliases:
             payload = await self.company_concept(cik10, tag)
             if payload is not None and payload.get("units", {}).get("USD"):
                 return tag, payload
         return None
+
+    async def _latest_annual_concept_value(self, cik10: str, concept: str) -> float | None:
+        """Most recent usable value for `concept` — for a duration concept
+        (revenue, net_income), the latest 10-K annual figure (same
+        form=="10-K" + _ANNUAL_DURATION_DAYS_RANGE filter as
+        get_financial_statement_bundle); for an instant concept
+        (total_debt, cash_and_equivalents), the latest balance-sheet value
+        regardless of form. Phase 4 peer-financials building only — a
+        standalone lookup, not threaded through FiscalPeriod."""
+        resolved = await self.resolve_concept(cik10, concept)
+        if resolved is None:
+            return None
+        _tag, payload = resolved
+        is_instant = concept in _INSTANT_CONCEPTS
+        candidates: list[tuple[date, float]] = []
+        for point in payload.get("units", {}).get("USD", []):
+            end_raw = point.get("end")
+            val = point.get("val")
+            if end_raw is None or val is None:
+                continue
+            end = date.fromisoformat(end_raw)
+            if is_instant:
+                candidates.append((end, val))
+                continue
+            if point.get("form") != "10-K":
+                continue
+            start_raw = point.get("start")
+            if start_raw is None:
+                continue
+            duration_days = (end - date.fromisoformat(start_raw)).days
+            if not (
+                _ANNUAL_DURATION_DAYS_RANGE[0] <= duration_days <= _ANNUAL_DURATION_DAYS_RANGE[1]
+            ):
+                continue
+            candidates.append((end, val))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[0])
+        return float(candidates[-1][1])
+
+    async def latest_shares_outstanding(self, cik10: str) -> float | None:
+        """Most recent us-gaap:CommonStockSharesOutstanding value. Confirmed
+        live against GOOGL (multiple share classes) that this tag resolves to
+        a single combined total with no per-class dimensional handling
+        needed — see tests/golden/googl_shares_outstanding_concept.json."""
+        payload = await self.company_concept(cik10, "CommonStockSharesOutstanding")
+        if payload is None:
+            return None
+        candidates = [
+            (date.fromisoformat(p["end"]), p["val"])
+            for p in payload.get("units", {}).get("shares", [])
+            if p.get("end") and p.get("val") is not None
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[0])
+        return float(candidates[-1][1])
+
+    async def peers_by_sic(
+        self, sic_code: str, exclude_cik: str, limit: int = 100
+    ) -> list[tuple[str, str]]:
+        """(cik10, ticker) pairs sharing `sic_code`, excluding `exclude_cik`,
+        cross-referenced against company_tickers.json for a usable ticker
+        (the browse-edgar feed's own name/title fields are unusable — see
+        sic_lookup.py). Single page only (fetches _SIC_FEED_PAGE_SIZE raw
+        candidates, no pagination) — a deliberate Phase 4 MVP simplification;
+        see the Phase 4 plan's NOTES. `limit` caps the *returned* (cik,
+        ticker) pair count, not the feed page size — the two must not be
+        conflated: most SIC-feed entries in registration order are shells/
+        delisted filers absent from company_tickers.json (confirmed live —
+        the Phase 4 plan's live GOOGL/SIC-7370 validation run found 0 of the
+        first `limit`-sized raw page had an active ticker when `limit` was
+        also used as the feed's own count param, a real bug caught here),
+        so the raw page fetched must be comfortably larger than the number
+        of usable candidates actually needed."""
+        xml_text = await _fetch_sic_company_list(sic_code, _SIC_FEED_PAGE_SIZE)
+        candidate_ciks = parse_sic_atom_feed(xml_text)
+        ticker_data = await _fetch_company_tickers()
+        cik_to_ticker: dict[str, str] = {
+            str(entry["cik_str"]).zfill(10): entry["ticker"] for entry in ticker_data.values()
+        }
+        exclude_cik10 = _zero_pad_cik(exclude_cik)
+        seen: set[str] = set()
+        pairs: list[tuple[str, str]] = []
+        for cik10 in candidate_ciks:
+            if cik10 == exclude_cik10 or cik10 in seen:
+                continue
+            ticker = cik_to_ticker.get(cik10)
+            if ticker is None:
+                continue
+            seen.add(cik10)
+            pairs.append((cik10, ticker))
+            if len(pairs) >= limit:
+                break
+        return pairs
+
+    async def build_peer_financials(
+        self, ticker: str, cik10: str, price: float
+    ) -> PeerFinancials | None:
+        """None only when price or shares_outstanding can't be resolved —
+        both are required (non-Optional) PeerFinancials fields, so a
+        candidate that can't produce them is excluded from the peer set
+        entirely rather than included with a fabricated number. ebitda is
+        always None — no reliable generic-peer EBITDA source (no operating-
+        income/interest/tax fields fetched for arbitrary peers);
+        PeerMultiples.ev_to_ebitda already degrades to None gracefully."""
+        shares = await self.latest_shares_outstanding(cik10)
+        if shares is None or shares <= 0:
+            return None
+        revenue = await self._latest_annual_concept_value(cik10, "revenue")
+        net_income = await self._latest_annual_concept_value(cik10, "net_income")
+        total_debt = await self._latest_annual_concept_value(cik10, "total_debt")
+        cash = await self._latest_annual_concept_value(cik10, "cash_and_equivalents")
+        return PeerFinancials(
+            ticker=ticker.upper(),
+            price=price,
+            shares_outstanding=shares,
+            revenue=revenue,
+            net_income=net_income,
+            ebitda=None,
+            total_debt=total_debt,
+            cash_and_equivalents=cash,
+        )
 
     async def full_text_search(self, query: str, forms: list[str] | None = None) -> dict:
         return await _fetch_full_text_search(query, tuple(forms or ()))

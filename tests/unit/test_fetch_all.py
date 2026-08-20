@@ -7,6 +7,7 @@ import respx
 
 from agentic_fundamental_analyst.contracts.filings import FilingSections
 from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle
+from agentic_fundamental_analyst.contracts.intake import TickerIntakeResult
 from agentic_fundamental_analyst.contracts.macro import MacroSeriesBundle
 from agentic_fundamental_analyst.contracts.prices import PriceHistory
 from agentic_fundamental_analyst.data.cache import clear_cache
@@ -89,14 +90,17 @@ async def test_in_scope_ticker_returns_fully_typed_bundle(monkeypatch):
         return_value=httpx.Response(200, json=_load_json("tiingo_aapl_sample.json"))
     )
 
-    financials, filings, macro, prices, transcript = await fetch_all("GOOGL")
+    intake, financials, filings, macro, prices, transcript = await fetch_all("GOOGL")
 
+    assert isinstance(intake, TickerIntakeResult)
     assert isinstance(financials, FinancialStatementBundle)
     assert isinstance(filings, FilingSections)
     assert all(isinstance(m, MacroSeriesBundle) for m in macro)
     assert isinstance(prices, PriceHistory)
     assert transcript is None
 
+    assert intake.sic_code == "7370"
+    assert intake.in_scope is True
     assert financials.ticker == "GOOGL"
     assert filings.item_1_business is not None
     assert len(macro) == 3

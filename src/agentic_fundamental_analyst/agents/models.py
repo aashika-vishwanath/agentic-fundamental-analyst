@@ -24,3 +24,14 @@ FLAG_CONSOLIDATOR_MODEL = "anthropic:claude-haiku-4-5-20251001"
 # without rechecking the profile (e.g. Haiku 4.5 does not support adaptive
 # thinking at all).
 INVESTIGATOR_MODEL = "anthropic:claude-opus-5"
+
+# Sonnet tier (PRD §4 roster) — Phase 4's three agents are pure narration
+# over already-computed, fully-typed deterministic data (peer multiples,
+# macro series values, DCF output), no tools, not agentic loops — same
+# profile as the three Phase 1-2 analysts above. Split one constant per
+# agent (not reusing e.g. FINANCIAL_STATEMENTS_ANALYST_MODEL) so each can be
+# retuned independently later without touching the others, same convention
+# as every other agent in this file.
+SECTOR_ANALYST_MODEL = "anthropic:claude-sonnet-5"
+MACRO_SENSITIVITY_ANALYST_MODEL = "anthropic:claude-sonnet-5"
+VALUATION_INTERPRETER_MODEL = "anthropic:claude-sonnet-5"
