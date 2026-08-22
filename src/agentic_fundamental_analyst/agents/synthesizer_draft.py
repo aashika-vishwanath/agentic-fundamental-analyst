@@ -105,7 +105,20 @@ stacking them as separate red flags.
 # was emitted at all, and pydantic-ai's retry-once-on-validation-failure
 # still failed the same way -- found live running this phase's own eval
 # dataset, not anticipated in the plan.
-_MAX_OUTPUT_TOKENS = 8192
+#
+# 8192 itself proved insufficient against a real ticker's full-size
+# MemoSynthesisInput (found live this session, GOOGL, after the eval
+# datasets' small synthetic fixtures had already passed at that cap): the
+# `sections` array was either truncated entirely (Field required [missing])
+# or, once, mis-encoded as a stringified JSON blob rather than a native
+# array under the pressure of generating that much structured content (see
+# contracts/memo.py's _coerce_stringified_list_fields for that separate
+# fix). Claude Sonnet 5 supports up to 128K output tokens on the standard
+# Messages API, and OTPM billing/rate-limits are based on tokens actually
+# generated, not this cap -- raising it well above what a real memo needs is
+# free, so this is deliberately generous rather than tuned to the minimum
+# that happened to work once.
+_MAX_OUTPUT_TOKENS = 32000
 
 synthesizer_draft = Agent(
     SYNTHESIZER_DRAFT_MODEL,

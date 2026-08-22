@@ -67,8 +67,10 @@ correctly framed as an assumption is not untraceable.
 # for the same reason as agents/synthesizer_draft.py: an attack list citing
 # several exact-verbatim quoted_claims (some drawn from long sections) plus
 # critiques can exceed the default before the model finishes. See that
-# module's comment for the full account of the failure this fixes.
-_MAX_OUTPUT_TOKENS = 8192
+# module's comment for the full account of the failure this fixes, incl. why
+# 8192 itself proved insufficient against a real ticker's full-size input
+# (found live this session, GOOGL) and why raising this further is free.
+_MAX_OUTPUT_TOKENS = 20000
 
 red_team = Agent(
     RED_TEAM_MODEL,

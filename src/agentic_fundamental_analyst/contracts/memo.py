@@ -7,15 +7,39 @@ both for consistency with every other closed-set/coverage-gap convention already
 in this codebase.
 """
 
+import json
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from agentic_fundamental_analyst.contracts.financials import CoverageGap
 from agentic_fundamental_analyst.contracts.investigation import InvestigationVerdict
 from agentic_fundamental_analyst.contracts.sourcing import SourcedFigure, SourcedQuote
+
+
+def _coerce_stringified_list_fields(data: Any, *field_names: str) -> Any:
+    """Anthropic's tool-call output occasionally serializes a large, deeply
+    nested list field as an escaped JSON string (e.g. `"sections": "[...]"`)
+    instead of a properly nested array -- a real quirk observed live against
+    a real ticker's full-size MemoSynthesisInput (never seen against any
+    eval dataset's small synthetic fixtures, and never seen before this
+    session because no prior live run ever reached this call before hitting
+    the Phase 5 rate-limit wall first). Fails the SAME way on pydantic-ai's
+    own automatic retry, so this is not a transient fluke to just retry past
+    -- coerce it here, before Pydantic's normal type validation runs, rather
+    than let a well-formed-but-misencoded response get rejected outright."""
+    if not isinstance(data, dict):
+        return data
+    for field_name in field_names:
+        value = data.get(field_name)
+        if isinstance(value, str):
+            try:
+                data = {**data, field_name: json.loads(value)}
+            except json.JSONDecodeError:
+                pass  # leave as-is; normal validation will raise a clear error
+    return data
 
 
 class Rating(str, Enum):
@@ -112,6 +136,11 @@ class SynthesizerDraftAgentOutput(BaseModel):
     conviction: ConvictionTier
     sections: list[MemoSectionAgentOutput]
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_stringified_sections(cls, data: Any) -> Any:
+        return _coerce_stringified_list_fields(data, "sections")
+
 
 class MemoDraft(BaseModel):
     ticker: str
@@ -140,6 +169,11 @@ class AttackCandidate(BaseModel):
 
 class RedTeamAgentOutput(BaseModel):
     attack_candidates: list[AttackCandidate]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_stringified_attack_candidates(cls, data: Any) -> Any:
+        return _coerce_stringified_list_fields(data, "attack_candidates")
 
 
 class Attack(BaseModel):
@@ -176,6 +210,11 @@ class SynthesizerResolveAgentOutput(BaseModel):
     rating: Rating
     conviction: ConvictionTier
     sections: list[MemoSectionAgentOutput]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_stringified_lists(cls, data: Any) -> Any:
+        return _coerce_stringified_list_fields(data, "sections", "resolutions")
 
 
 class Memo(BaseModel):

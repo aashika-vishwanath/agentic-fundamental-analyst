@@ -2,7 +2,7 @@
 Runs the SIC-exclusion intake check first and short-circuits before any
 other fetch if the ticker is out of scope (PRD §7)."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from agentic_fundamental_analyst.contracts.filings import FilingSections
 from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle
@@ -16,6 +16,20 @@ from agentic_fundamental_analyst.data.tiingo import PriceClient
 
 # Macro series pulled for every ticker (see .agents/references/free-data-sources.md §2)
 _MACRO_SERIES_IDS = ["DGS10", "FEDFUNDS", "T10Y2Y"]
+
+# FredClient.observations() defaults to full series history since inception
+# (DGS10 back to 1962) when given no start date -- harmless on its own, but
+# MemoSynthesisInput (Phase 5) carries macro_bundles whole, and the Macro
+# Sensitivity Analyst's own prompt only ever asks for "current regime and
+# recent direction," never a multi-decade history. Measured live (this
+# session, real GOOGL data): unbounded macro_bundles alone was 1.3M chars
+# (~527K of MemoSynthesisInput's 614K total input tokens, over Anthropic's
+# 500K ITPM cap on its own) versus 121K tokens for a 5-year window -- 5 years
+# chosen over a shorter window specifically to keep the 2020 near-zero-rate
+# era and the 2022-2023 hiking cycle in view, which a 2-year window would cut
+# off entirely and leave the Macro Analyst no "recent direction" story to
+# tell from a flat, already-elevated plateau.
+_MACRO_LOOKBACK = timedelta(days=365 * 5)
 
 
 class TickerOutOfScope(Exception):
@@ -56,8 +70,9 @@ async def fetch_all(
     transcript = await edgar.get_transcript_input(intake.cik)
 
     fred = FredClient()
+    macro_start = date.today() - _MACRO_LOOKBACK
     macro_bundles = [
-        await fred.observations(series_id, start=price_start) for series_id in _MACRO_SERIES_IDS
+        await fred.observations(series_id, start=macro_start) for series_id in _MACRO_SERIES_IDS
     ]
 
     prices = await PriceClient().daily_prices(ticker, start=price_start)

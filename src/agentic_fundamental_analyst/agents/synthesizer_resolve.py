@@ -75,8 +75,11 @@ the original rating depended on.
 # for the same reason as agents/synthesizer_draft.py, and higher still: this
 # pass rewrites all ten full sections AND emits a resolutions list, strictly
 # more output than the draft pass. See that module's comment for the full
-# account of the failure this fixes.
-_MAX_OUTPUT_TOKENS = 10000
+# account of the failure this fixes, incl. why an initial hand-tuned cap
+# (10000 here) still proved insufficient against a real ticker's full-size
+# input (found live this session, GOOGL) and why raising this further is
+# free (128K output ceiling on Sonnet 5, billed on tokens actually used).
+_MAX_OUTPUT_TOKENS = 32000
 
 synthesizer_resolve = Agent(
     SYNTHESIZER_RESOLVE_MODEL,
