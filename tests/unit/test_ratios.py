@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from agentic_fundamental_analyst import ratios
-from agentic_fundamental_analyst.contracts.financials import FiscalPeriod
+from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle, FiscalPeriod
 
 PRIOR = FiscalPeriod(
     fiscal_year=2023,
@@ -205,3 +205,51 @@ def test_beneish_m_score_reports_which_components_are_missing():
     assert result.reason.startswith("components_unavailable:")
     for component in ("aqi", "depi", "dsri", "gmi", "lvgi", "sgai", "sgi", "tata"):
         assert component in result.reason
+
+
+# --- build_company_macro_profile (Phase 5) --------------------------------
+
+
+def test_build_company_macro_profile_full_data():
+    bundle = FinancialStatementBundle(
+        ticker="TEST", cik="0000000000", periods=[PRIOR, CURRENT], coverage_gaps=[]
+    )
+    profile = ratios.build_company_macro_profile("TEST", "Software", bundle)
+    assert profile.ticker == "TEST"
+    assert profile.sic_description == "Software"
+    assert profile.latest_revenue == 1200.0
+    assert profile.latest_total_debt == 500.0
+    years = (CURRENT.period_end - PRIOR.period_end).days / 365.0
+    expected_cagr = (1200.0 / 1000.0) ** (1 / years) - 1
+    assert profile.revenue_cagr == pytest.approx(expected_cagr)
+
+
+def test_build_company_macro_profile_missing_total_debt_does_not_blank_revenue():
+    current_no_debt = CURRENT.model_copy(update={"total_debt": None})
+    bundle = FinancialStatementBundle(
+        ticker="TEST", cik="0000000000", periods=[PRIOR, current_no_debt], coverage_gaps=[]
+    )
+    profile = ratios.build_company_macro_profile("TEST", "Software", bundle)
+    assert profile.latest_revenue == 1200.0
+    assert profile.latest_total_debt is None
+    assert profile.revenue_cagr is not None
+
+
+def test_build_company_macro_profile_fewer_than_two_annual_periods():
+    bundle = FinancialStatementBundle(
+        ticker="TEST", cik="0000000000", periods=[CURRENT], coverage_gaps=[]
+    )
+    profile = ratios.build_company_macro_profile("TEST", "Software", bundle)
+    assert profile.latest_revenue == 1200.0
+    assert profile.revenue_cagr is None
+
+
+def test_build_company_macro_profile_zero_annual_periods():
+    ten_q = CURRENT.model_copy(update={"form": "10-Q"})
+    bundle = FinancialStatementBundle(
+        ticker="TEST", cik="0000000000", periods=[ten_q], coverage_gaps=[]
+    )
+    profile = ratios.build_company_macro_profile("TEST", "Software", bundle)
+    assert profile.latest_revenue is None
+    assert profile.latest_total_debt is None
+    assert profile.revenue_cagr is None

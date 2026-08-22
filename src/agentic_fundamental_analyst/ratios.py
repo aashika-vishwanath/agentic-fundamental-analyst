@@ -11,6 +11,7 @@ rather than silently approximated; revisit if a later phase needs it.
 """
 
 from agentic_fundamental_analyst.contracts.financials import FinancialStatementBundle, FiscalPeriod
+from agentic_fundamental_analyst.contracts.macro_analyst import CompanyMacroProfile
 from agentic_fundamental_analyst.contracts.ratios import PeriodRatios, RatioResult, RatioTrendBundle
 
 _DAYS_PER_YEAR = 365.0
@@ -47,9 +48,7 @@ def days_sales_outstanding(period: FiscalPeriod) -> RatioResult:
 # --- checklist #1: receivables growing faster than revenue ---------------
 
 
-def receivables_growth_vs_revenue_growth(
-    current: FiscalPeriod, prior: FiscalPeriod
-) -> RatioResult:
+def receivables_growth_vs_revenue_growth(current: FiscalPeriod, prior: FiscalPeriod) -> RatioResult:
     ar_growth = _growth(
         current.accounts_receivable, prior.accounts_receivable, "ar_growth_unavailable"
     )
@@ -96,9 +95,7 @@ def cash_conversion_ratio(period: FiscalPeriod) -> RatioResult:
 
 
 def capex_to_depreciation_ratio(period: FiscalPeriod) -> RatioResult:
-    return _ratio(
-        period.capex, period.depreciation_amortization, "capex_or_depreciation_missing"
-    )
+    return _ratio(period.capex, period.depreciation_amortization, "capex_or_depreciation_missing")
 
 
 # --- checklist #17: cash conversion cycle (partial — see module docstring) --
@@ -166,9 +163,7 @@ def aqi(current: FiscalPeriod, prior: FiscalPeriod) -> RatioResult:
     current_q = _non_current_asset_quality(current)
     prior_q = _non_current_asset_quality(prior)
     if current_q is None or prior_q is None:
-        return RatioResult(
-            value=None, reason="total_assets_or_current_assets_or_ppe_gross_missing"
-        )
+        return RatioResult(value=None, reason="total_assets_or_current_assets_or_ppe_gross_missing")
     if prior_q == 0:
         return RatioResult(value=None, reason="prior_period_asset_quality_is_zero")
     return RatioResult(value=current_q / prior_q)
@@ -326,4 +321,47 @@ def compute_trend_bundle(bundle: FinancialStatementBundle) -> RatioTrendBundle:
     ]
     return RatioTrendBundle(
         ticker=bundle.ticker, cik=bundle.cik, periods=periods, coverage_gaps=bundle.coverage_gaps
+    )
+
+
+# --- Phase 5: CompanyMacroProfile construction ----------------------------
+#
+# Previously deferred: CLAUDE.md's own Phase 4 manual-run example hardcoded
+# latest_revenue/latest_total_debt/revenue_cagr to None with a "fill from
+# FinancialStatementBundle in a real run" comment. pipeline.py cannot ship
+# with that placeholder -- it would report every real ticker as having no
+# revenue/debt data, itself a fabricated coverage gap.
+
+
+def build_company_macro_profile(
+    ticker: str, sic_description: str, bundle: FinancialStatementBundle
+) -> CompanyMacroProfile:
+    """Latest annual (10-K) period's revenue/total_debt (independently None-
+    guarded -- one field being absent must not blank out the other); revenue
+    CAGR across all annual periods with a non-null revenue, oldest to newest
+    (None if fewer than 2 such periods, or if the earliest usable revenue is
+    zero/negative -- a CAGR is undefined there, never approximated)."""
+    annual_periods = sorted(
+        (p for p in bundle.periods if p.form == "10-K"), key=lambda p: p.period_end
+    )
+    latest_revenue = annual_periods[-1].revenue if annual_periods else None
+    latest_total_debt = annual_periods[-1].total_debt if annual_periods else None
+
+    revenue_points = [(p.period_end, p.revenue) for p in annual_periods if p.revenue is not None]
+    revenue_cagr: float | None = None
+    if len(revenue_points) >= 2:
+        (start_date, start_revenue), (end_date, end_revenue) = (
+            revenue_points[0],
+            revenue_points[-1],
+        )
+        years = (end_date - start_date).days / _DAYS_PER_YEAR
+        if start_revenue > 0 and years > 0:
+            revenue_cagr = (end_revenue / start_revenue) ** (1 / years) - 1
+
+    return CompanyMacroProfile(
+        ticker=ticker,
+        sic_description=sic_description,
+        latest_revenue=latest_revenue,
+        latest_total_debt=latest_total_debt,
+        revenue_cagr=revenue_cagr,
     )

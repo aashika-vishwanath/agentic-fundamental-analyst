@@ -35,3 +35,16 @@ INVESTIGATOR_MODEL = "anthropic:claude-opus-5"
 SECTOR_ANALYST_MODEL = "anthropic:claude-sonnet-5"
 MACRO_SENSITIVITY_ANALYST_MODEL = "anthropic:claude-sonnet-5"
 VALUATION_INTERPRETER_MODEL = "anthropic:claude-sonnet-5"
+
+# Sonnet tier (PRD §10, revised this session from an original Opus starting
+# point) — the Synthesizer draft/resolve passes and Red-Team are reasoning-
+# heavy but not agentic (no tool loop, unlike the Investigator above), and
+# these three calls stack the largest context in the whole pipeline (the full
+# MemoSynthesisInput, three times in sequence). Sonnet is tried first given
+# that token-cost profile; PRD §10 explicitly frames this as a starting tier,
+# not a final decision — a bump back to Opus for a specific call (the resolve
+# pass's anti-sycophancy requirement is the likeliest candidate) must be
+# justified by this phase's own eval dataset, not intuition.
+SYNTHESIZER_DRAFT_MODEL = "anthropic:claude-sonnet-5"
+RED_TEAM_MODEL = "anthropic:claude-sonnet-5"
+SYNTHESIZER_RESOLVE_MODEL = "anthropic:claude-sonnet-5"

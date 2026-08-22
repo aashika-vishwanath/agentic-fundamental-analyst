@@ -257,6 +257,99 @@ attempt in an end-to-end manual run — see the Phase 4 plan's Execution Deviati
 account, including a real peer-discovery bug (feed page size vs. returned-candidate cap conflated)
 caught only by this live run, not by unit tests or the eval datasets' first pass.
 
-## Not yet built (Phase 5+)
+## Synthesizer (draft + resolve), Red-Team, `pipeline.py` (Phase 5)
 
-Synthesizer (draft + resolve), Red-Team — see PRD §4 roster and §12 phase plan.
+**Modules**: `agents/synthesizer_draft.py`, `agents/red_team.py`, `agents/synthesizer_resolve.py`,
+`pipeline.py`. **Model**: `anthropic:claude-sonnet-5` for all three (PRD §10, revised this
+session from an original Opus starting point given these calls' token-cost profile — a starting
+tier, not a final decision; see PRD §10's note on what would justify a bump back to Opus).
+**Capabilities**: none — reasoning-heavy but not agentic, same profile as every non-Investigator
+agent in this codebase. All three needed an explicit `model_settings=ModelSettings(max_tokens=…)`
+(8192 for draft/red-team, 10000 for resolve) — pydantic-ai's 4096 default silently truncated a
+full 10-section memo's output before `sections` was ever emitted; see the Phase 5 plan's
+Execution Deviations §1 for the exact failure and how it was found.
+
+**Grounding — the fifth mechanism in this codebase**, after closed-table lookup (Phase 1),
+verbatim-quote checking (Phase 2), URL provenance (Phase 3), and numeric-tolerance matching
+(Phase 4). `agents/memo_grounding.py` extends Phase 4's `numeric_grounding.py` wholesale — no
+new regex — adding only (a) a much larger known-numbers universe harvested from *every* upstream
+typed field a `MemoSynthesisInput` carries, including raw filing prose (no earlier phase needed
+to harvest numbers from free text this way), and (b) a **per-section** gate instead of Phase 4's
+per-agent-output gate: one ungrounded section replaces only that section's content, never the
+whole memo. Unlike Phase 4's agents, the model IS trusted with citation metadata here
+(`MemoSectionAgentOutput.cited_figures`) — Section 10 (Appendix/Sourcing)'s "literal traceability
+table" only exists if the model states what it's citing — so the gate checks two things per
+section: every number in `content` grounds, AND every `cited_figures` value grounds
+independently (closes the gap a content-only check would miss: a fabricated `SourcedFigure` with
+an invented value and a plausible fake source string). `memo_grounding.py` keeps its own bounded
+pairwise-expansion (`_expand_known_numbers`, capped to same-magnitude pairs) rather than reusing
+`numeric_grounding.py::expand_known_numbers`'s unrestricted version — the latter's unrestricted
+cross-product broke down over Phase 5's much larger, heterogeneous known-number sets (a real
+revenue figure divided by an unrelated small ratio produced a spurious value that wrongly
+grounded a fabricated citation); see the Phase 5 plan's Execution Deviations §2. This left Phase
+4's own already-passing agents untouched.
+
+**Synthesizer draft pass** (`agents/synthesizer_draft.py`) reads the full `MemoSynthesisInput`
+(raw financials/filing text/macro/valuation plus the three Phase 4 agents' narrated summaries and
+the Investigator's verdicts) and writes all 10 of PRD §3's sections, in the fixed order enforced
+by the closed `MemoSectionTitle` Literal (`contracts/memo.py::MEMO_SECTION_ORDER`) — a missing
+section gets a code-synthesized placeholder plus a `CoverageGap`, never a crash. Instructions are
+drawn directly from `.claude/skills/investment-memo-writing/SKILL.md` §1, not reinvented.
+
+**Red-Team** (`agents/red_team.py`) attacks the draft for exactly two failure modes (skill §4
+Pass 2): `untraceable_claim` and `boilerplate` (including a real checklist-eligible red flag the
+draft's Earnings Quality section omitted entirely). Grounding here is verbatim-quote verification
+— reused directly from `agents/grounding.py::quote_is_grounded`, the same mechanism Phase 2's
+Filings/Transcript Analysts use — an attack's `quoted_claim` must be a real substring of the
+section it names, or it's dropped into `dropped_candidates`, never trusted.
+
+**Synthesizer resolve pass** (`agents/synthesizer_resolve.py`) answers or downgrades every
+attack and produces the `Memo` that ships — a full rewrite of all 10 sections (not a patch),
+matching PRD §4's literal `MemoDraft + RedTeamAttack -> Memo` roster I/O. Directly targets PRD
+§14's named risk ("sycophantic resolve-pass") with a structural check, not just a prompt
+instruction: every attack index must have exactly one `AttackResolution` record
+(`_fill_missing_resolutions` synthesizes a `model_addressed=False` fallback for any attack the
+model didn't address, so the structural invariant always holds even when the model's own
+resolution is incomplete), and the per-section grounding gate reapplies here too, since a
+rewrite could reintroduce a fabricated number while "fixing" something else.
+
+**Live eval findings**: the grounding gate's fallback fired on a real sample in both the draft
+and resolve datasets — investigated directly (not assumed benign) and confirmed to be the safety
+net catching a genuine one-off ungrounded claim, not a defect; see the Phase 5 plan's Execution
+Deviations §3 for the full account, including a plausible root cause specific to
+`appendix_and_sourcing` (a section whose job is describing the memo's own sourcing apparatus,
+which can tempt a self-referential, structurally-ungroundable count).
+
+**`pipeline.py::run_memo_pipeline(ticker)`** is the orchestrator PRD §4's diagram describes,
+wiring every phase (0-5) into the fixed sequence: `fetch_all()` → the three Stage-2 analysts
+(parallel) → exact-dedup + Flag Consolidator → Investigator × N (parallel) → peer discovery +
+deterministic valuation math → Sector/Macro/Valuation Interpreter (parallel) → draft → red-team →
+resolve. Closes a real, previously-deferred gap: `ratios.py::build_company_macro_profile()`
+(new — latest annual revenue/total_debt, revenue CAGR, both independently None-guarded) replaces
+the hardcoded `None` placeholders CLAUDE.md's own Phase 4 manual-run example carried. Raises a
+new `ValuationAssumptionsUnavailable` if `build_valuation_assumptions()` returns `None` (a full
+FRED DGS10 outage) — mirrors `data/peer_discovery.py::PeerDiscoveryError`'s precedent (a genuine
+system problem, not a routine coverage gap) rather than threading a phantom
+`ValuationAssumptions | None` through three more downstream contracts that don't support it
+today; noted as a real, if rare, edge case surfaced only by wiring the full pipeline for the
+first time, not by any Phase 0-4 unit test.
+
+**Not live-verified end-to-end**: a real `run_memo_pipeline("GOOGL")` run was attempted three
+times and consistently 429'd on `synthesizer_draft`'s own request — a real GOOGL 10-K's full
+filing text (already measured at 65K-132K tokens for just the Filings Analyst's narrower slice)
+plus the rest of `MemoSynthesisInput` plausibly approaches a meaningful fraction of this
+account's 500K-input-tokens/minute cap on its own. Every other validation level (unit tests, all
+three new eval datasets, lint/type-check) completed successfully against real API calls. See the
+Phase 5 plan's Execution Deviations §5 — a real, unresolved operational constraint (account
+rate-limit tier, or a filing-text truncation strategy), Phase 6-shaped, not a Phase 5 correctness
+defect. `run_memo_pipeline()` and `render.py::render_memo_to_pdf()` are both implemented and
+plumbing-tested; re-run Level 4 once this is resolved.
+
+**Rendering** (`render.py`, added mid-plan at the user's request — not part of PRD §3's literal
+"Final Artifact Specification", which is the typed `Memo` object): `render_memo_to_markdown()` /
+`render_memo_to_pdf()` are pure deterministic formatting, deliberately never called from
+`pipeline.py` or any agent module, so a PDF-layout bug can never affect whether `Memo` itself is
+correct or grounded. Uses `markdown` + `xhtml2pdf` (pure-Python, no Cairo/Pango system
+dependency, unlike `weasyprint`). The Appendix section's sourcing table is mechanically
+regenerated from every section's real `cited_figures`/`cited_quotes` — Section 10's "literal
+traceability table" made real from typed data, not trusted from the model's own prose alone.

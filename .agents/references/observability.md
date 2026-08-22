@@ -101,9 +101,40 @@ transcript this run either). On the real consolidated capex flag: `search_count=
 `dropped_evidence_count=0`, 11 grounded evidence items cited (vs. 35 raw noise domains returned by
 search) — exactly the gap `evidence_domain_count` exists to see past.
 
+## Phase 5: the three Synthesis stages' spans, and `pipeline.py`'s own wiring
+
+`synthesizer_draft_stage`, `red_team_stage`, `synthesizer_resolve_stage` (in
+`agents/synthesizer_draft.py`/`agents/red_team.py`/`agents/synthesizer_resolve.py`) follow the
+same per-stage span pattern as every prior agent. Attributes worth watching:
+`section_fallback_count` / `section_missing_count` (draft and resolve — nonzero is the
+`fallback_triggered` grounding signal made visible in the trace, same "check the trace, not just
+the eval score" precedent as Phase 1's `dropped_candidate_count`), `attack_count` /
+`dropped_candidate_count` (red-team), and `unaddressed_attack_count` (resolve — should be 0 on a
+healthy run; nonzero means `_fill_missing_resolutions`'s structural fallback fired, i.e. the
+model left at least one attack without a real resolution).
+
+`pipeline.py::run_memo_pipeline()` does **not** yet wrap the whole run in a single outer span
+with trace-wide `ticker` baggage — PRD §9's "one trace per pipeline run... every span filterable
+by ticker" is still open. The plan flagged this explicitly as something to verify against real
+Logfire/pydantic-ai API before writing (not guess), and the Level 4 live run needed to actually
+confirm the trace shape never completed (see below) — so every stage still only carries `ticker`
+as a local span attribute, same stopgap noted since Phase 1. Revisit once a live pipeline run
+succeeds.
+
+**Not live-verified**: a real `run_memo_pipeline("GOOGL")` run — attempted three times, each
+failing identically with a 429 (`This request would exceed your rate limit of 500,000 input
+tokens per minute`) on `synthesizer_draft`'s own request, before any Phase 5 span could even be
+recorded. Not a code defect — every other validation level (unit tests, all three Phase 5 eval
+datasets, lint/type-check) completed successfully against real API calls in the same session;
+this is specifically the single largest possible payload (a real ticker's full
+`MemoSynthesisInput`) hitting an account-level rate-limit wall. Full account:
+`.agents/plans/phase-5-synthesis-redteam-pipeline.md` Execution Deviations §5.
+
 ## Dashboards, annotation workflow
 
-Not yet built — `pipeline.py` (Phase 5) is what will generate enough real runs to make a dashboard
-worth building. Two real eval-fixture fixes this phase (see `evals.md`) are the annotation flywheel's
-first concrete instances, both caught by inspecting eval-run output directly rather than a production
-trace.
+Not yet built. `pipeline.py` (Phase 5) now exists and `render.py` can turn its output into a real
+PDF, but the Level 4 live GOOGL run that would generate the first real end-to-end trace hasn't
+completed (see above) — dashboards remain deferred until that succeeds. Three real bugs this
+phase (two implementation, one eval fixture — see `evals.md`) were still caught by inspecting
+eval-run output directly, the same annotation-flywheel precedent as Phase 2's two fixture fixes,
+just not yet from a production trace.

@@ -112,9 +112,53 @@ search-query count and cited-evidence domain diversity directly, rather than on 
 `HasMatchingSpan` is still used, narrowed to what it *can* see: that the `investigator_stage` span
 exists.
 
+## `synthesizer_draft`, `red_team`, `synthesizer_resolve` (Phase 5, real model, 2026-08-19)
+
+Three datasets, `evals/synthesizer_draft.py` (3 cases), `evals/red_team.py` (4 cases),
+`evals/synthesizer_resolve.py` (4 cases), all against one fictional company (Meridian Robotics
+Inc. / MRBT) built with real, checkable numbers — same "concrete fictional company, not generic
+placeholder text" precedent `evals.md` already documents for Phase 2's `filings` dataset.
+
+**Evaluator preference order, same as every prior dataset**: `MemoGroundingEvaluator` (deterministic
+hard gate — `is_grounded` independently re-derived from the delivered output via
+`agents/memo_grounding.py`'s own functions, not trusted from the module under test;
+`fallback_triggered` a soft quality *signal*, not a pass/fail bar) and `AllTenSectionsPresentInOrder`
+(deterministic) on both memo-producing datasets; `AttackQuoteGroundedEvaluator` (deterministic,
+`red_team`) and `AllAttacksAddressedEvaluator` (deterministic, `synthesizer_resolve`); recall checks
+(`ExpectedCoverageGapPropagated`, `ExpectedAttackCategoryRaised`/`FewAttacksOnCleanDraft`,
+`ExpectedResolutionPath`); `LLMJudge` last, pinned to each agent's own model, rubrics quoted
+directly from `investment-memo-writing` skill §1/§4 rather than reinvented.
+
+**Live-verified scores**: `synthesizer_draft` — `is_grounded` 100%/3, `AllTenSectionsPresentInOrder`
+100%/3, `ExpectedCoverageGapPropagated` 100%/3, `LLMJudge` 3/3; `fallback_triggered` fired once
+(1/3 cases) — investigated and confirmed to be the grounding gate correctly self-healing a
+one-off ungrounded claim on a real sample, not a defect (re-running the same section in
+isolation reproduced fully-grounded content). `red_team` — all 4 deterministic/recall evaluators
+100%/4, `LLMJudge` 4/4. `synthesizer_resolve` — `AllAttacksAddressedEvaluator` 100%/4,
+`is_grounded` 100%/4, `AllTenSectionsPresentInOrder` 100%/4, `ExpectedResolutionPath` 4/4,
+`LLMJudge` 4/4; `fallback_triggered` fired on 2/4 cases, same self-healing pattern, both times on
+`appendix_and_sourcing` specifically (plausible cause: this section describes the memo's own
+sourcing apparatus, tempting a self-referential citation count that by definition can't ground
+against upstream data). Full account, including the mid-run bugs these live runs caught (an
+undersized default `max_tokens` that silently truncated output entirely below the schema's
+`sections` field, and `expand_known_numbers`'s unrestricted pairwise expansion breaking down at
+Phase 5's larger known-number-set scale): `.agents/plans/phase-5-synthesis-redteam-pipeline.md`
+Execution Deviations §1-3.
+
+**A real fixture bug, not a rubric change**: `evals/red_team.py`'s `clean_draft_few_or_no_attacks`
+negative case wasn't actually clean — its executive-summary content claimed a "$120 million
+capacity" figure that had been dropped from that file's own (shorter) `item_7_mdna` fixture text
+when it was written, even though the same fact was present in the other two Phase 5 eval files'
+richer fixtures. The model correctly attacked it as untraceable. Fixed by adding the fact back to
+the fixture's filing text, mirroring the exact "fix what the fixture's content actually says, not
+what the eval checks for" precedent already documented above for Phase 2's `filings` dataset.
+Full account: the Phase 5 plan's Execution Deviations §4.
+
 ## Annotation → eval flywheel
 
-Not yet exercised in this codebase beyond the two documented fixture fixes above (which came from
-inspecting real eval-run output, not a production trace — the flywheel proper, pulling from real
-Logfire traces of real ticker runs, starts mattering once Phase 5's `pipeline.py` exists and real
-runs accumulate).
+First real instance beyond fixture fixes: this phase's own live eval runs surfaced two genuine
+implementation bugs (Execution Deviations §1-2 above) and one fixture bug (§4) purely from
+running the datasets, not from a production trace — `pipeline.py` now exists, but the Level 4
+manual GOOGL run that would start the trace-based flywheel proper hasn't completed yet (see
+`observability.md`'s Phase 5 section) — it hit a real, unresolved rate-limit wall three times in
+a row rather than a code defect.

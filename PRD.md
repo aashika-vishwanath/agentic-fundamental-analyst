@@ -128,9 +128,9 @@ Driven by a single `async def run_memo_pipeline(ticker: str) -> Memo`, using `as
 | Sector Analyst | Interpret peer/segment context | `SectorPeerData` | `SectorContext` | Claude Sonnet | none | No |
 | Macro Sensitivity Analyst | Interpret macro exposure | `MacroSeriesBundle` + company profile | `MacroContext` | Claude Sonnet | none | No |
 | Valuation Interpreter | Narrate deterministic valuation output | `ValuationResult` | `ValuationContext` | Claude Sonnet | none | No |
-| Synthesizer — draft pass | Draft the memo from all upstream typed context | all upstream outputs | `MemoDraft` | Claude Opus | none | No |
-| Red-Team | Attack the draft as hard as evidence allows | `MemoDraft` + upstream context | `RedTeamAttack` | Claude Opus | none | No |
-| Synthesizer — resolve pass | Answer or downgrade every attack | `MemoDraft` + `RedTeamAttack` | `Memo` | Claude Opus | none | No |
+| Synthesizer — draft pass | Draft the memo from all upstream typed context | all upstream outputs | `MemoDraft` | Claude Sonnet | none | No |
+| Red-Team | Attack the draft as hard as evidence allows | `MemoDraft` + upstream context | `RedTeamAttack` | Claude Sonnet | none | No |
+| Synthesizer — resolve pass | Answer or downgrade every attack | `MemoDraft` + `RedTeamAttack` | `Memo` | Claude Sonnet | none | No |
 
 Model tiers above are a starting assignment, not fixed — routing changes must be justified by eval results (Section 10).
 
@@ -268,6 +268,7 @@ Layered, bottom-up:
 ## 10. Cost & Model Routing
 
 - Model tier per agent as listed in Section 4's roster; any change to that routing must be justified by a measurable eval-score or cost delta, not intuition.
+- **Phase 5 (Synthesizer draft/resolve, Red-Team) starts on Sonnet, not Opus** — these are reasoning-heavy but not agentic (no tool loop), and Sonnet 5 is capable enough to be worth trying first given Opus's token cost. This is a starting tier, not a final decision: if the Phase 5 eval dataset shows a specific call underperforming (the resolve pass's anti-sycophancy requirement, §14, is the most likely candidate) that call gets bumped to Opus, justified by the eval score per the principle above — not decided upfront.
 - **Prompt-caching convention**: stable, long-lived content (filing text, the financial statement bundle) is placed first in the message/context for each agent call, so it can be cached across repeated runs during development.
 - **Spend limits on the Investigator** (the one component with open-ended, potentially multi-call cost): deferred as an open decision to Phase 6 — either manual budget enforcement on Logfire's `operation.cost` attribute at the stage boundary, or `pydantic-ai-harness`'s `SpendLimits` capability, decided once its exact API is verified against primary docs.
 
